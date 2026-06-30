@@ -148,10 +148,10 @@ NGINX_CONF
 nginx -t
 if systemctl is-active --quiet nginx 2>/dev/null; then
     systemctl reload nginx
-    info "Nginx 配置已重载"
 else
-    info "Nginx 配置已安装（Nginx 未运行，请启动后生效: systemctl start nginx）"
+    systemctl start nginx
 fi
+info "Nginx 已就绪"
 
 # ── 3. Fail2Ban 配置 ────────────────────────────────────
 info "安装 Fail2Ban 配置"
@@ -232,13 +232,11 @@ ignoreregex =
 datepattern = {^LN-BEG}
 FLTR_CONN
 
+systemctl start fail2ban
 if systemctl is-active --quiet fail2ban 2>/dev/null; then
     systemctl restart fail2ban
-    info "Fail2Ban 配置已重载"
-else
-    systemctl start fail2ban 2>/dev/null || true
-    info "Fail2Ban 配置已安装（Fail2Ban 已启动）"
 fi
+info "Fail2Ban 已就绪"
 
 # ── 4. 命令行工具 ────────────────────────────────────────
 info "安装命令行工具"
