@@ -50,18 +50,27 @@ check_dependency() {
     fi
 
     warn "$desc 未安装"
-    prompt "是否安装 $desc? (y/n, 默认 y): "
-    read -r answer
-    answer=${answer:-y}
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        install_package "$pkg"
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            error "安装 $desc 失败，请手动安装后重试"
+
+    # 检测是否为交互式终端（curl | bash 管道模式无法使用 read）
+    if [ -t 0 ]; then
+        # 交互式终端，通过 /dev/tty 读取用户输入
+        local answer
+        prompt "是否安装 $desc? (y/n, 默认 y): "
+        read -r answer </dev/tty
+        answer=${answer:-y}
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            error "$desc 是必需的依赖，无法继续安装"
         fi
-        info "$desc 安装成功"
     else
-        error "$desc 是必需的依赖，无法继续安装"
+        # 非交互式（curl | bash），自动安装
+        info "非交互式模式，自动安装 $desc..."
     fi
+
+    install_package "$pkg"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        error "安装 $desc 失败，请手动安装后重试"
+    fi
+    info "$desc 安装成功"
 }
 
 echo -e "${GREEN}========================================${NC}"
