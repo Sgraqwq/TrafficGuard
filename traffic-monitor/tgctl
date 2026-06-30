@@ -1,0 +1,591 @@
+#!/usr/bin/env bash
+# TrafficGuard - 命令行管理工具
+# 易用、安全的流量监控和 IP 封禁管理
+
+set -euo pipefail
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+# 工具名称
+TOOL_NAME="TrafficGuard"
+
+# 检查 root 权限
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED}错误: 需要 root 权限运行${NC}"
+        echo "请使用: sudo tgctl"
+        exit 1
+    fi
+}
+
+# 检查依赖
+check_deps() {
+    local missing=()
+    
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        missing+=("fail2ban")
+    fi
+    
+    if ! command -v nft >/dev/null 2>&1; then
+        missing+=("nftables")
+    fi
+    
+    if ! command -v nginx >/dev/null 2>&1; then
+        missing+=("nginx")
+    fi
+    
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo -e "${RED}错误: 缺少依赖${NC}"
+        echo "缺少: ${missing[*]}"
+        echo "请先运行安装脚本: sudo bash scripts/install.sh"
+        exit 1
+    fi
+}
+
+# 显示 Logo
+show_logo() {
+    clear
+    echo -e "${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║                                                                  ║"
+    echo "║   ████████╗███████╗██████╗ ███╗   ███╗███████╗██████╗            ║"
+    echo "║   ╚══██╔══╝██╔════╝██╔══██╗████╗ ████║██╔════╝██╔══██╗           ║"
+    echo "║      ██║   █████╗  ██████╔╝██╔████╔██║█████╗  ██████╔╝           ║"
+    echo "║      ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ██╔══██╗           ║"
+    echo "║      ██║   ███████╗██║  ██║██║ ╚═╝ ██║███████╗██║  ██║           ║"
+    echo "║      ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝           ║"
+    echo "║                                                                  ║"
+    echo "║                  流量监控和 IP 封禁管理工具                       ║"
+    echo "║                                                                  ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# 显示主菜单
+show_menu() {
+    echo -e "${BOLD}请选择操作:${NC}"
+    echo
+    echo -e "  ${GREEN}1)${NC} 查看状态"
+    echo -e "  ${GREEN}2)${NC} 查看封禁列表"
+    echo -e "  ${GREEN}3)${NC} 封禁 IP"
+    echo -e "  ${GREEN}4)${NC} 解封 IP"
+    echo -e "  ${GREEN}5)${NC} 查看流量统计（实时）"
+    echo -e "  ${GREEN}6)${NC} 查看历史流量"
+    echo -e "  ${GREEN}7)${NC} SSH 防护"
+    echo -e "  ${GREEN}8)${NC} 配置管理"
+    echo -e "  ${GREEN}9)${NC} 服务管理"
+    echo -e "  ${GREEN}0)${NC} 退出"
+    echo
+}
+
+# 1. 查看状态
+show_status() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    TrafficGuard 状态${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # Fail2Ban 状态
+    echo -e "${BOLD}Fail2Ban 状态:${NC}"
+    if systemctl is-active --quiet fail2ban; then
+        echo -e "  状态: ${GREEN}运行中${NC}"
+    else
+        echo -e "  状态: ${RED}未运行${NC}"
+    fi
+    
+    # 获取 jail 列表
+    local jails=$(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | xargs)
+    if [ -n "$jails" ]; then
+        echo -e "  Jails: ${GREEN}$jails${NC}"
+    fi
+    
+    echo
+    
+    # Nginx 状态
+    echo -e "${BOLD}Nginx 状态:${NC}"
+    if systemctl is-active --quiet nginx; then
+        echo -e "  状态: ${GREEN}运行中${NC}"
+    else
+        echo -e "  状态: ${RED}未运行${NC}"
+    fi
+    
+    # 检查配置
+    if [ -f /etc/nginx/conf.d/trafficguard.conf ]; then
+        echo -e "  配置: ${GREEN}已加载${NC}"
+    else
+        echo -e "  配置: ${YELLOW}未找到${NC}"
+    fi
+    
+    echo
+    
+    # 封禁统计
+    echo -e "${BOLD}封禁统计:${NC}"
+    local total_banned=0
+    for jail in $(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' ' '); do
+        jail=$(echo "$jail" | xargs)
+        if [ -n "$jail" ]; then
+            local banned=$(fail2ban-client status "$jail" 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
+            total_banned=$((total_banned + ${banned:-0}))
+        fi
+    done
+    echo -e "  当前封禁: ${RED}$total_banned${NC} 个 IP"
+    
+    echo
+}
+
+# 2. 查看封禁列表
+show_ban_list() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    封禁列表${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    for jail in $(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' ' '); do
+        jail=$(echo "$jail" | xargs)
+        if [ -n "$jail" ]; then
+            echo -e "${BOLD}Jail: $jail${NC}"
+            fail2ban-client status "$jail" 2>/dev/null | grep -E "Currently banned|Total banned|Banned IP list" | sed 's/^/  /'
+            echo
+        fi
+    done
+}
+
+# 3. 封禁 IP
+ban_ip() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    封禁 IP${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # 选择 jail
+    echo -e "${BOLD}选择要封禁的类型:${NC}"
+    echo "  1) 速率限制 (nginx-limit-req)"
+    echo "  2) 连接限制 (nginx-limit-conn)"
+    echo "  3) SSH 防护 (sshd)"
+    echo "  4) 全部"
+    echo
+    read -p "请选择 [1-4]: " choice
+    
+    local jails=()
+    case $choice in
+        1) jails=("nginx-limit-req") ;;
+        2) jails=("nginx-limit-conn") ;;
+        3) jails=("sshd") ;;
+        4) jails=("nginx-limit-req" "nginx-limit-conn" "sshd") ;;
+        *)
+            echo -e "${RED}无效选择${NC}"
+            return
+            ;;
+    esac
+    
+    # 输入 IP
+    echo
+    read -p "请输入要封禁的 IP 地址: " ip
+    
+    # 验证 IP 格式
+    if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo -e "${RED}无效的 IP 地址格式${NC}"
+        return
+    fi
+    
+    # 确认
+    echo
+    read -p "确定要封禁 $ip 吗? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已取消${NC}"
+        return
+    fi
+    
+    # 执行封禁
+    for jail in "${jails[@]}"; do
+        if fail2ban-client set "$jail" banip "$ip" 2>/dev/null; then
+            echo -e "${GREEN}已封禁 $ip (jail: $jail)${NC}"
+        else
+            echo -e "${RED}封禁失败: $ip (jail: $jail)${NC}"
+        fi
+    done
+}
+
+# 4. 解封 IP
+unban_ip() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    解封 IP${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # 显示当前封禁列表
+    echo -e "${BOLD}当前封禁列表:${NC}"
+    for jail in $(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' ' '); do
+        jail=$(echo "$jail" | xargs)
+        if [ -n "$jail" ]; then
+            local banned=$(fail2ban-client status "$jail" 2>/dev/null | grep "Banned IP list" | cut -d: -f2 | xargs)
+            if [ -n "$banned" ]; then
+                echo "  $jail: $banned"
+            fi
+        fi
+    done
+    echo
+    
+    # 选择 jail
+    echo -e "${BOLD}选择要解封的类型:${NC}"
+    echo "  1) 速率限制 (nginx-limit-req)"
+    echo "  2) 连接限制 (nginx-limit-conn)"
+    echo "  3) SSH 防护 (sshd)"
+    echo "  4) 全部"
+    echo
+    read -p "请选择 [1-4]: " choice
+    
+    local jails=()
+    case $choice in
+        1) jails=("nginx-limit-req") ;;
+        2) jails=("nginx-limit-conn") ;;
+        3) jails=("sshd") ;;
+        4) jails=("nginx-limit-req" "nginx-limit-conn" "sshd") ;;
+        *)
+            echo -e "${RED}无效选择${NC}"
+            return
+            ;;
+    esac
+    
+    # 输入 IP
+    echo
+    read -p "请输入要解封的 IP 地址: " ip
+    
+    # 验证 IP 格式
+    if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo -e "${RED}无效的 IP 地址格式${NC}"
+        return
+    fi
+    
+    # 确认
+    echo
+    read -p "确定要解封 $ip 吗? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已取消${NC}"
+        return
+    fi
+    
+    # 执行解封
+    for jail in "${jails[@]}"; do
+        if fail2ban-client set "$jail" unbanip "$ip" 2>/dev/null; then
+            echo -e "${GREEN}已解封 $ip (jail: $jail)${NC}"
+        else
+            echo -e "${RED}解封失败: $ip (jail: $jail)${NC}"
+        fi
+    done
+}
+
+# 5. 查看流量统计（实时）
+show_traffic() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    实时流量统计${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # 检查 nftables 表
+    if ! nft list table ip trafficguard >/dev/null 2>&1; then
+        echo -e "${YELLOW}nftables 表 'trafficguard' 不存在${NC}"
+        echo "请先运行安装脚本创建表"
+        return
+    fi
+    
+    echo -e "${BOLD}Top 20 流量 IP:${NC}"
+    echo
+    printf "%-20s %-15s %-15s\n" "IP 地址" "数据包" "字节数"
+    echo "----------------------------------------------------"
+    
+    nft list chain ip trafficguard TRAFFICGUARD 2>/dev/null | \
+    grep -E "counter|saddr" | \
+    awk '{
+        for(i=1; i<=NF; i++) {
+            if($i == "saddr") ip = $(i+1)
+            if($i == "counter") {
+                if($(i+1) == "bytes") bytes = $(i+2)
+                else if($(i+1) == "packets") packets = $(i+2)
+            }
+        }
+        if(ip != "") printf "%-20s %-15s %-15s\n", ip, packets, bytes
+    }' | sort -k3 -rn | head -20
+    
+    echo
+}
+
+# 6. 查看历史流量
+show_history_traffic() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    历史流量统计${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    echo -e "${BOLD}选择查看方式:${NC}"
+    echo "  1) 今天流量"
+    echo "  2) 查看指定日期"
+    echo "  3) 流量汇总"
+    echo "  4) 返回主菜单"
+    echo
+    read -p "请选择 [1-4]: " choice
+    
+    case $choice in
+        1)
+            bash /usr/local/bin/traffic-view-stats -t
+            ;;
+        2)
+            echo
+            read -p "请输入日期 (YYYYMMDD): " date
+            if [[ "$date" =~ ^[0-9]{8}$ ]]; then
+                bash /usr/local/bin/traffic-view-stats -d "$date"
+            else
+                echo -e "${RED}无效的日期格式${NC}"
+            fi
+            ;;
+        3)
+            bash /usr/local/bin/traffic-view-stats -s
+            ;;
+        4)
+            return
+            ;;
+        *)
+            echo -e "${RED}无效选择${NC}"
+            ;;
+    esac
+}
+
+# 6. SSH 防护
+ssh_protection() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    SSH 防护${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    # SSH jail 状态
+    echo -e "${BOLD}SSH 防护状态:${NC}"
+    if fail2ban-client status sshd >/dev/null 2>&1; then
+        echo -e "  状态: ${GREEN}已启用${NC}"
+        fail2ban-client status sshd 2>/dev/null | grep -E "Currently banned|Total banned|Banned IP list" | sed 's/^/  /'
+    else
+        echo -e "  状态: ${YELLOW}未启用${NC}"
+    fi
+    
+    echo
+    
+    # SSH 连接信息
+    echo -e "${BOLD}当前 SSH 连接:${NC}"
+    who | head -10
+    echo
+    
+    # 最近登录
+    echo -e "${BOLD}最近登录:${NC}"
+    last -n 5 2>/dev/null | head -5
+    echo
+    
+    # SSH 配置建议
+    echo -e "${BOLD}安全建议:${NC}"
+    echo "  1. 使用密钥登录，禁用密码登录"
+    echo "  2. 修改默认 SSH 端口"
+    echo "  3. 启用 Fail2Ban SSH jail"
+    echo
+    
+    # 操作选项
+    echo -e "${BOLD}操作:${NC}"
+    echo "  1) 查看 SSH 日志"
+    echo "  2) 封禁可疑 IP"
+    echo "  3) 返回主菜单"
+    echo
+    read -p "请选择 [1-3]: " choice
+    
+    case $choice in
+        1)
+            echo
+            echo -e "${BOLD}最近 SSH 失败登录:${NC}"
+            grep "Failed password" /var/log/auth.log 2>/dev/null | tail -10 || echo "无法读取日志"
+            echo
+            ;;
+        2)
+            echo
+            read -p "请输入要封禁的 IP: " ip
+            if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                if fail2ban-client set sshd banip "$ip" 2>/dev/null; then
+                    echo -e "${GREEN}已封禁 $ip${NC}"
+                else
+                    echo -e "${RED}封禁失败${NC}"
+                fi
+            else
+                echo -e "${RED}无效的 IP 地址${NC}"
+            fi
+            ;;
+        3)
+            return
+            ;;
+    esac
+}
+
+# 7. 配置管理
+config_management() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    配置管理${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    echo -e "${BOLD}配置文件:${NC}"
+    echo "  1) Nginx 限制配置: /etc/nginx/conf.d/trafficguard.conf"
+    echo "  2) Fail2Ban 配置: /etc/fail2ban/jail.local"
+    echo "  3) Fail2Ban Filter: /etc/fail2ban/filter.d/nginx-limit-*.conf"
+    echo
+    
+    echo -e "${BOLD}操作:${NC}"
+    echo "  1) 查看 Nginx 配置"
+    echo "  2) 查看 Fail2Ban 配置"
+    echo "  3) 编辑 Nginx 配置"
+    echo "  4) 编辑 Fail2Ban 配置"
+    echo "  5) 测试 Nginx 配置"
+    echo "  6) 重载所有配置"
+    echo "  7) 返回主菜单"
+    echo
+    read -p "请选择 [1-7]: " choice
+    
+    case $choice in
+        1)
+            echo
+            echo -e "${BOLD}Nginx 配置:${NC}"
+            cat /etc/nginx/conf.d/trafficguard.conf 2>/dev/null || echo "配置文件不存在"
+            echo
+            ;;
+        2)
+            echo
+            echo -e "${BOLD}Fail2Ban 配置:${NC}"
+            cat /etc/fail2ban/jail.local 2>/dev/null | grep -A 50 "nginx-limit" || echo "配置不存在"
+            echo
+            ;;
+        3)
+            echo
+            if command -v nano >/dev/null 2>&1; then
+                nano /etc/nginx/conf.d/trafficguard.conf
+            elif command -v vi >/dev/null 2>&1; then
+                vi /etc/nginx/conf.d/trafficguard.conf
+            else
+                echo -e "${RED}未找到编辑器 (nano/vi)${NC}"
+            fi
+            ;;
+        4)
+            echo
+            if command -v nano >/dev/null 2>&1; then
+                nano /etc/fail2ban/jail.local
+            elif command -v vi >/dev/null 2>&1; then
+                vi /etc/fail2ban/jail.local
+            else
+                echo -e "${RED}未找到编辑器 (nano/vi)${NC}"
+            fi
+            ;;
+        5)
+            echo
+            nginx -t
+            echo
+            ;;
+        6)
+            echo
+            echo -e "${BOLD}重载配置...${NC}"
+            nginx -t && systemctl reload nginx
+            systemctl reload fail2ban
+            echo -e "${GREEN}配置已重载${NC}"
+            echo
+            ;;
+        7)
+            return
+            ;;
+    esac
+}
+
+# 8. 服务管理
+service_management() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    服务管理${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    echo -e "${BOLD}服务状态:${NC}"
+    echo "  Nginx:     $(systemctl is-active nginx 2>/dev/null || echo '未运行')"
+    echo "  Fail2Ban:  $(systemctl is-active fail2ban 2>/dev/null || echo '未运行')"
+    echo
+    
+    echo -e "${BOLD}操作:${NC}"
+    echo "  1) 启动 Nginx"
+    echo "  2) 停止 Nginx"
+    echo "  3) 重启 Nginx"
+    echo "  4) 启动 Fail2Ban"
+    echo "  5) 停止 Fail2Ban"
+    echo "  6) 重启 Fail2Ban"
+    echo "  7) 启用开机启动"
+    echo "  8) 禁用开机启动"
+    echo "  9) 返回主菜单"
+    echo
+    read -p "请选择 [1-9]: " choice
+    
+    case $choice in
+        1) systemctl start nginx && echo -e "${GREEN}Nginx 已启动${NC}" ;;
+        2) systemctl stop nginx && echo -e "${GREEN}Nginx 已停止${NC}" ;;
+        3) systemctl restart nginx && echo -e "${GREEN}Nginx 已重启${NC}" ;;
+        4) systemctl start fail2ban && echo -e "${GREEN}Fail2Ban 已启动${NC}" ;;
+        5) systemctl stop fail2ban && echo -e "${GREEN}Fail2Ban 已停止${NC}" ;;
+        6) systemctl restart fail2ban && echo -e "${GREEN}Fail2Ban 已重启${NC}" ;;
+        7)
+            systemctl enable nginx
+            systemctl enable fail2ban
+            echo -e "${GREEN}已启用开机启动${NC}"
+            ;;
+        8)
+            systemctl disable nginx
+            systemctl disable fail2ban
+            echo -e "${GREEN}已禁用开机启动${NC}"
+            ;;
+        9)
+            return
+            ;;
+    esac
+}
+
+# 主函数
+main() {
+    check_root
+    check_deps
+    
+    while true; do
+        show_logo
+        show_menu
+        
+        read -p "请选择 [0-9]: " choice
+        
+        case $choice in
+            1) show_status ;;
+            2) show_ban_list ;;
+            3) ban_ip ;;
+            4) unban_ip ;;
+            5) show_traffic ;;
+            6) show_history_traffic ;;
+            7) ssh_protection ;;
+            8) config_management ;;
+            9) service_management ;;
+            0)
+                echo -e "${GREEN}再见！${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}无效选择${NC}"
+                ;;
+        esac
+        
+        echo
+        echo -e "${YELLOW}按回车继续...${NC}"
+        read
+    done
+}
+
+# 运行主函数
+main "$@"
