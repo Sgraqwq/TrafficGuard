@@ -10,6 +10,62 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || error "请使用 root 运行"
 
+# GitHub raw 文件地址（curl | bash 管道模式下使用）
+REPO_RAW="https://raw.githubusercontent.com/Sgraqwq/TrafficGuard/main"
+
+# 检测安装模式：本地文件 vs 远程管道
+detect_install_mode() {
+    # BASH_SOURCE 为空或为 "bash" 时表示从 stdin 读取（curl | bash）
+    if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" = "bash" ] || [ "${BASH_SOURCE[0]}" = "/dev/stdin" ]; then
+        echo "remote"
+    else
+        echo "local"
+    fi
+}
+
+INSTALL_MODE=$(detect_install_mode)
+
+# 获取文件内容或路径（兼容本地和远程模式）
+get_source() {
+    local relative_path=$1
+    if [ "$INSTALL_MODE" = "local" ]; then
+        local base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        echo "$base_dir/$relative_path"
+    else
+        echo "$REPO_RAW/$relative_path"
+    fi
+}
+
+# 复制文件（本地 cp 或远程 curl）
+copy_file() {
+    local src=$1
+    local dst=$2
+    local dir=$(dirname "$dst")
+    mkdir -p "$dir"
+    if [ "$INSTALL_MODE" = "local" ]; then
+        cp "$src" "$dst"
+    else
+        curl -fsSL "$src" -o "$dst"
+    fi
+}
+
+# 复制并设置可执行权限
+install_script() {
+    local src=$1
+    local dst=$2
+    local tmp
+    if [ "$INSTALL_MODE" = "local" ]; then
+        chmod +x "$src"
+        cp "$src" "$dst"
+    else
+        tmp=$(mktemp)
+        curl -fsSL "$src" -o "$tmp"
+        chmod +x "$tmp"
+        cp "$tmp" "$dst"
+        rm -f "$tmp"
+    fi
+}
+
 # 检测包管理器
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
@@ -99,34 +155,29 @@ echo
 info "依赖检测完成"
 echo
 
-# 获取脚本所在目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # 安装 Nginx 配置
 info "安装 Nginx 配置"
-cp "$SCRIPT_DIR/nginx-limit.conf" /etc/nginx/conf.d/trafficguard.conf
+copy_file "$(get_source "scripts/nginx-limit.conf")" /etc/nginx/conf.d/trafficguard.conf
 nginx -t && systemctl reload nginx
 info "Nginx 配置已安装并重载"
 
 # 安装 Fail2Ban 配置
 info "安装 Fail2Ban 配置"
-cp "$SCRIPT_DIR/fail2ban-jail.conf" /etc/fail2ban/jail.local
-cp "$SCRIPT_DIR/fail2ban-filter/"*.conf /etc/fail2ban/filter.d/
+copy_file "$(get_source "scripts/fail2ban-jail.conf")" /etc/fail2ban/jail.local
+copy_file "$(get_source "scripts/fail2ban-filter/nginx-limit-req.conf")" /etc/fail2ban/filter.d/nginx-limit-req.conf
+copy_file "$(get_source "scripts/fail2ban-filter/nginx-limit-conn.conf")" /etc/fail2ban/filter.d/nginx-limit-conn.conf
 systemctl restart fail2ban
 info "Fail2Ban 配置已安装并重启"
 
 # 安装命令行工具
 info "安装命令行工具"
-chmod +x "$SCRIPT_DIR/../traffic-monitor/tgctl"
-cp "$SCRIPT_DIR/../traffic-monitor/tgctl" /usr/local/bin/tgctl
+install_script "$(get_source "traffic-monitor/tgctl")" /usr/local/bin/tgctl
 info "命令行工具已安装到 /usr/local/bin/tgctl"
 
 # 安装流量统计脚本
 info "安装流量统计脚本"
-chmod +x "$SCRIPT_DIR/../traffic-monitor/save-stats.sh"
-chmod +x "$SCRIPT_DIR/../traffic-monitor/view-stats.sh"
-cp "$SCRIPT_DIR/../traffic-monitor/save-stats.sh" /usr/local/bin/traffic-save-stats
-cp "$SCRIPT_DIR/../traffic-monitor/view-stats.sh" /usr/local/bin/traffic-view-stats
+install_script "$(get_source "traffic-monitor/save-stats.sh")" /usr/local/bin/traffic-save-stats
+install_script "$(get_source "traffic-monitor/view-stats.sh")" /usr/local/bin/traffic-view-stats
 info "流量统计脚本已安装"
 
 # 创建统计目录
