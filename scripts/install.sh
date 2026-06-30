@@ -126,7 +126,11 @@ info "定时任务已设置"
 info "创建 nftables 流量统计表"
 nft add table ip trafficguard 2>/dev/null || true
 nft add chain ip trafficguard TRAFFICGUARD 2>/dev/null || true
-info "nftables 表已创建"
+# 添加 counter 规则，统计所有流量（按源 IP 区分）
+nft add rule ip trafficguard TRAFFICGUARD counter 2>/dev/null || true
+# 可选：如果需要按源 IP 单独统计，可添加以下规则
+# nft add rule ip trafficguard TRAFFICGUARD ip saddr 0.0.0.0/0 counter
+info "nftables 表已创建并添加 counter 规则"
 
 echo
 info "安装完成"

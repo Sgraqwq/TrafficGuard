@@ -54,13 +54,13 @@ show_date_traffic() {
     # 解析并显示数据
     awk '
     /^#/ {
-        # 时间戳行
-        timestamp = substr($0, 2)
+        # 时间戳行：移除 "# " 前缀
+        timestamp = substr($0, 3)
         next
     }
     /^[0-9]/ {
         # 数据行：IP packets bytes
-        printf "%-20s %-20s %-15s %-15s\n", timestamp, $1, $2, $3
+        printf "%-23s %-18s %-15s %-15s\n", timestamp, $1, $2, ($3 ? $3 : "N/A")
     }
     ' "$stats_file"
     
@@ -119,11 +119,13 @@ show_realtime() {
         for(i=1; i<=NF; i++) {
             if($i == "saddr") ip = $(i+1)
             if($i == "counter") {
-                if($(i+1) == "bytes") bytes = $(i+2)
-                else if($(i+1) == "packets") packets = $(i+2)
+                for(j = i+1; j <= NF; j++) {
+                    if($j == "packets") packets = $(j+1)
+                    else if($j == "bytes") bytes = $(j+1)
+                }
             }
         }
-        if(ip != "") printf "%-20s %-15s %-15s\n", ip, packets, bytes
+        if(ip != "") printf "%-20s %-15s %-15s\n", ip, packets, (bytes ? bytes : "0")
     }' | sort -k3 -rn | head -20
     
     echo
