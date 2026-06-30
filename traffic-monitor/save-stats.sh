@@ -12,10 +12,10 @@ LOG_FILE="/var/log/trafficguard/traffic-stats.log"
 mkdir -p "$STATS_DIR"
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# 获取当前时间
-NOW=$(date +%Y%m%d_%H%M%S)
-TODAY=$(date +%Y%m%d)
-HOUR=$(date +%H)
+# 获取当前时间（单次调用确保一致性）
+NOW_FULL=$(date +%Y%m%d_%H%M%S)
+TODAY="${NOW_FULL:0:8}"
+NOW="${NOW_FULL}"
 
 # 统计文件
 STATS_FILE="$STATS_DIR/traffic_${TODAY}.log"
@@ -29,33 +29,38 @@ if ! nft list table ip trafficguard >/dev/null 2>&1; then
     exit 1
 fi
 
-# 获取 nftables 流量数据
-TRAFFIC_DATA=$(nft list chain ip trafficguard TRAFFICGUARD 2>/dev/null | \
-    grep -E "counter|saddr" | \
+# 检查 nftables set 是否存在
+if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
+    echo "[$NOW] 错误: nftables set 'per_ip_traffic' 不存在" >> "$LOG_FILE"
+    exit 1
+fi
+
+# 获取 nftables 流量数据（从动态 set 中解析 per-IP 计数）
+# 输出格式: elements = { IP1 counter packets X bytes Y, IP2 counter packets Z bytes W }
+TRAFFIC_DATA=$(nft list set ip trafficguard per_ip_traffic 2>/dev/null | \
+    grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ counter packets [0-9]+ bytes [0-9]+' 2>/dev/null | \
     awk '{
-        for(i=1; i<=NF; i++) {
-            if($i == "saddr") ip = $(i+1)
-            if($i == "counter") {
-                for(j = i+1; j <= NF; j++) {
-                    if($j == "packets") packets = $(j+1)
-                    else if($j == "bytes") bytes = $(j+1)
-                }
-            }
+        ip = $1
+        for(i = 1; i <= NF; i++) {
+            if($i == "packets") packets = $(i+1)
+            if($i == "bytes") bytes = $(i+1)
         }
-        if(ip != "") printf "%s %s %s\n", ip, packets, bytes
-    }')
+        if(ip != "" && packets != "" && bytes != "") printf "%s %s %s\n", ip, packets, bytes
+    }' || true)
 
 # 验证数据格式
 if [ -n "$TRAFFIC_DATA" ]; then
-    # 检查每行是否包含 IP、packets、bytes 三个字段
-    echo "$TRAFFIC_DATA" | awk 'NF < 3 {print "[ERROR] 数据格式异常:", $0 >> "/dev/stderr"; exit 1}'
-    if [ $? -ne 0 ]; then
+    # 检查每行是否包含 IP、packets、bytes 三个字段（在 if 条件中避免 set -e 误杀）
+    if ! echo "$TRAFFIC_DATA" | awk 'NF < 3 {exit 1}'; then
         echo "[$NOW] 错误: 流量数据格式异常，跳过保存" >> "$LOG_FILE"
         exit 1
     fi
-    echo "# $NOW" >> "$STATS_FILE"
-    echo "$TRAFFIC_DATA" >> "$STATS_FILE"
-    echo "" >> "$STATS_FILE"
+    # 原子写入：先写临时文件，再 mv
+    TMPFILE=$(mktemp "$STATS_DIR/.tmp.XXXXXX")
+    echo "# $NOW" > "$TMPFILE"
+    echo "$TRAFFIC_DATA" >> "$TMPFILE"
+    echo "" >> "$TMPFILE"
+    mv "$TMPFILE" "$STATS_FILE"
     echo "[$NOW] 已保存流量统计到 $STATS_FILE" >> "$LOG_FILE"
 else
     echo "[$NOW] 没有流量数据" >> "$LOG_FILE"

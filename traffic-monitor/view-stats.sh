@@ -109,24 +109,26 @@ show_realtime() {
         return
     fi
     
+    # 检查 nftables set
+    if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
+        echo -e "${YELLOW}nftables set 'per_ip_traffic' 不存在${NC}"
+        return
+    fi
+    
     echo -e "${BOLD}IP 地址              数据包            字节数${NC}"
     echo "----------------------------------------------------"
     
-    # 获取当前流量
-    nft list chain ip trafficguard TRAFFICGUARD 2>/dev/null | \
-    grep -E "counter|saddr" | \
+    # 获取当前流量（从动态 set 解析 per-IP 计数）
+    nft list set ip trafficguard per_ip_traffic 2>/dev/null | \
+    grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ counter packets [0-9]+ bytes [0-9]+' 2>/dev/null | \
     awk '{
-        for(i=1; i<=NF; i++) {
-            if($i == "saddr") ip = $(i+1)
-            if($i == "counter") {
-                for(j = i+1; j <= NF; j++) {
-                    if($j == "packets") packets = $(j+1)
-                    else if($j == "bytes") bytes = $(j+1)
-                }
-            }
+        ip = $1
+        for(i = 1; i <= NF; i++) {
+            if($i == "packets") packets = $(i+1)
+            if($i == "bytes") bytes = $(i+1)
         }
         if(ip != "") printf "%-20s %-15s %-15s\n", ip, packets, (bytes ? bytes : "0")
-    }' | sort -k3 -rn | head -20
+    }' | sort -k3 -rn | head -20 || true
     
     echo
 }

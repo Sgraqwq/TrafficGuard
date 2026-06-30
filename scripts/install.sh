@@ -11,18 +11,84 @@
 
 set -euo pipefail
 
-# ── 颜色与日志 ──────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+# ── 环境变量 ────────────────────────────────────────────
+export DEBIAN_FRONTEND=noninteractive
+
+# ── 仓库地址 ─────────────────────────────────────────────
+TG_REPO="${TG_REPO:-https://github.com/Sgraqwq/TrafficGuard}"
+
+# URL 验证：防止恶意 URL 注入
+validate_tg_repo() {
+    local url="$1"
+    if ! echo "$url" | grep -qE '^https?://[a-zA-Z0-9]'; then
+        echo "[ERROR] TG_REPO 地址必须以 http:// 或 https:// 开头" >&2
+        exit 1
+    fi
+    if echo "$url" | grep -qE '[    ;&|`$(){}]' ; then
+        echo "[ERROR] TG_REPO 地址包含非法字符" >&2
+        exit 1
+    fi
+}
+validate_tg_repo "$TG_REPO"
+
+TG_RAW="${TG_REPO/github.com/raw.githubusercontent.com}/main"
+
+# ── 加载公共库 ─────────────────────────────────────────
+load_common_lib() {
+    # 优先级 1: 本地文件系统
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || true)"
+    if [ -n "$script_dir" ] && [ -f "$script_dir/lib/common.sh" ]; then
+        # shellcheck source=lib/common.sh
+        source "$script_dir/lib/common.sh"
+        return 0
+    fi
+
+    # 优先级 2: 从仓库下载（curl pipe 模式）
+    echo "[INFO] 正在加载公共库..."
+    local tmp
+    tmp=$(mktemp) || { echo "[ERROR] 创建临时文件失败" >&2; exit 1; }
+    curl -fsSL --connect-timeout 10 --max-time 30 "${TG_RAW}/scripts/lib/common.sh" -o "$tmp" || {
+        rm -f "$tmp"
+        echo "[ERROR] 下载公共库失败，请检查网络连接" >&2
+        exit 1
+    }
+    # shellcheck source=/dev/null
+    source "$tmp"
+    rm -f "$tmp"
+    echo "[INFO] 公共库加载完成"
+}
+load_common_lib
+
+# ── Trap 处理 ───────────────────────────────────────────
+trap cleanup_temp EXIT INT TERM
 
 # ── 检查 root ────────────────────────────────────────────
 [ "$(id -u)" -eq 0 ] || error "请使用 root 运行"
 
-# ── 仓库地址 ─────────────────────────────────────────────
-TG_REPO="${TG_REPO:-https://github.com/Sgraqwq/TrafficGuard}"
-TG_RAW="${TG_REPO/github.com/raw.githubusercontent.com}/main"
+# ── 系统环境检测 ────────────────────────────────────────
+INIT_SYSTEM=$(detect_init_system)
+FW_BACKEND=$(detect_firewall_backend)
+F2B_VER=$(detect_fail2ban_version)
+NGINX_CONF_DIR=$(detect_nginx_conf_dir)
+AUTH_LOG=$(detect_auth_log)
+
+info "系统环境:"
+info "  初始化系统: $INIT_SYSTEM"
+info "  防火墙后端: $FW_BACKEND"
+info "  Fail2Ban 版本: ${F2B_VER:-未安装}"
+info "  Nginx 配置目录: $NGINX_CONF_DIR"
+info "  认证日志路径: $AUTH_LOG"
+info ""
+
+# ── 版本兼容性检查 ──────────────────────────────────────
+if [ "$F2B_VER" != "not_installed" ] && [ "$F2B_VER" != "unknown" ]; then
+    # Fail2Ban 0.9.x 不支持 nftables 后端语法
+    if echo "$F2B_VER" | grep -qE '^0\.'; then
+        warn "Fail2Ban 版本 $F2B_VER 可能不支持 nftables 后端"
+        warn "建议升级到 1.0+ 或手动配置 iptables 后端"
+    fi
+fi
 
 # ── 包管理器检测 ────────────────────────────────────────
 detect_package_manager() {
@@ -36,18 +102,21 @@ detect_package_manager() {
 }
 
 PKG_MGR=$(detect_package_manager)
+info "包管理器: $PKG_MGR"
+echo ""
 
+# ── 安装辅助函数 ────────────────────────────────────────
 install_pkg() {
     local pkg=$1
     info "安装 $pkg"
     case "$PKG_MGR" in
-        apt-get|apt) apt-get update -qq && apt-get install -y -qq "$pkg" ;;
-        dnf)         dnf install -y -q "$pkg" ;;
-        yum)         yum install -y -q "$pkg" ;;
-        zypper)      zypper install -y "$pkg" ;;
-        pacman)      pacman -S --noconfirm "$pkg" ;;
-        apk)         apk add "$pkg" ;;
-        *)           error "无法自动安装 $pkg（未识别的包管理器），请手动安装后重试" ;;
+        apt-get|apt)  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" ;;
+        dnf)          dnf install -y -q "$pkg" ;;
+        yum)          yum install -y -q "$pkg" ;;
+        zypper)       zypper install -y "$pkg" ;;
+        pacman)       pacman -S --noconfirm "$pkg" ;;
+        apk)          apk add "$pkg" ;;
+        *)            error "无法自动安装 $pkg（未识别的包管理器），请手动安装后重试" ;;
     esac
 }
 
@@ -63,24 +132,18 @@ ensure_cmd() {
     info "$desc 安装成功"
 }
 
-# ── 下载辅助函数 ────────────────────────────────────────
+# ── 下载辅助函数（带超时） ──────────────────────────────
 dl() {
     local url="$TG_RAW/$1" dst="$2"
-    mkdir -p "$(dirname "$dst")"
-    curl -fsSL "$url" -o "$dst" || error "下载失败: $url"
+    mkdir -p "$(dirname "$dst")" || error "创建目录失败: $(dirname "$dst")"
+    curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
 }
 
 dl_chmod() {
     local url="$TG_RAW/$1" dst="$2"
-    mkdir -p "$(dirname "$dst")"
-    curl -fsSL "$url" -o "$dst" || error "下载失败: $url"
+    mkdir -p "$(dirname "$dst")" || error "创建目录失败: $(dirname "$dst")"
+    curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
     chmod +x "$dst"
-}
-
-write_file() {
-    local dst="$1"
-    mkdir -p "$(dirname "$dst")"
-    cat > "$dst"
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -90,23 +153,42 @@ write_file() {
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    TrafficGuard 安装程序${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo
+echo ""
+
+# ── 0. 前置检查 ──────────────────────────────────────────
+info "前置环境检查..."
+echo ""
+
+# 检查 nftables 可用性
+if [ "$FW_BACKEND" = "nftables" ]; then
+    check_nftables_available
+else
+    warn "未检测到 nftables，部分功能可能不可用"
+fi
+
+echo ""
+info "前置检查通过"
+echo ""
 
 # ── 1. 系统依赖 ──────────────────────────────────────────
 info "检测系统依赖..."
-echo
+echo ""
 
-ensure_cmd "nginx"          "nginx"    "Nginx Web 服务器"
-ensure_cmd "fail2ban-client" "fail2ban" "Fail2Ban 自动封禁工具"
-ensure_cmd "nft"             "nftables" "nftables 防火墙"
+ensure_cmd "nginx"           "nginx"      "Nginx Web 服务器"
+ensure_cmd "fail2ban-client" "fail2ban"   "Fail2Ban 自动封禁工具"
 
-echo
+# 如果检测到 nftables 则需要安装
+if [ "$FW_BACKEND" = "nftables" ]; then
+    ensure_cmd "nft" "nftables" "nftables 防火墙"
+fi
+
+echo ""
 info "依赖检测完成"
-echo
+echo ""
 
 # ── 2. Nginx 配置 ────────────────────────────────────────
 info "安装 Nginx 配置"
-write_file /etc/nginx/conf.d/trafficguard.conf <<'NGINX_CONF'
+write_file_atomic "$NGINX_CONF_DIR/trafficguard.conf" <<'NGINX_CONF'
 # TrafficGuard - Nginx 限制配置
 
 # 连接限制：每 IP 最多 100 并发连接
@@ -145,27 +227,44 @@ server {
 }
 NGINX_CONF
 
-nginx -t
-if systemctl is-active --quiet nginx 2>/dev/null; then
-    systemctl reload nginx
+# 测试 Nginx 配置并启动/重载
+if nginx -t 2>/dev/null; then
+    info "Nginx 配置测试通过"
+    if service_is_active nginx "$INIT_SYSTEM"; then
+        service_control reload nginx "$INIT_SYSTEM" && info "Nginx 已重新加载" || warn "Nginx 重载失败"
+    else
+        if service_control start nginx "$INIT_SYSTEM"; then
+            info "Nginx 已启动"
+        else
+            warn "Nginx 启动失败，请手动检查:"
+            warn "  nginx -t"
+            warn "  systemctl start nginx"
+        fi
+    fi
 else
-    systemctl start nginx
+    warn "Nginx 配置测试失败，请检查配置后手动启动:"
+    warn "  配置文件: $NGINX_CONF_DIR/trafficguard.conf"
+    warn "  nginx -t"
+    warn "  systemctl start nginx"
 fi
 info "Nginx 已就绪"
+echo ""
 
 # ── 3. Fail2Ban 配置 ────────────────────────────────────
 info "安装 Fail2Ban 配置"
 
-# jail.local
-write_file /etc/fail2ban/jail.local <<'FAIL2BAN_JAIL'
+# 写入 jail.d/trafficguard.conf（不再覆盖 jail.local）
+write_file_atomic /etc/fail2ban/jail.d/trafficguard.conf <<'FAIL2BAN_JAIL'
 # TrafficGuard - Fail2Ban Jail 配置
+# 由 TrafficGuard 安装脚本自动生成
 
 [DEFAULT]
 bantime = 3600
 findtime = 600
 maxretry = 10
-banaction = iptables-multiport
-ignoreip = 127.0.0.1/8 ::1
+banaction = nftables[type=multiport]
+# 忽略本地回环和内网网段，防止内部服务通信被误封
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
 logtarget = /var/log/fail2ban.log
 dbbackend = sqlite
 dbfilename = /var/lib/fail2ban/fail2ban.sqlite3
@@ -178,7 +277,7 @@ logpath = /var/log/nginx/error.log
 maxretry = 10
 findtime = 60
 bantime = 600
-action = iptables-multiport[name=nginx-limit-req, port="http,https", protocol=tcp]
+action = nftables[type=multiport, name=nginx-limit-req, port="http,https", protocol=tcp]
 
 [nginx-limit-conn]
 enabled = true
@@ -188,7 +287,7 @@ logpath = /var/log/nginx/error.log
 maxretry = 5
 findtime = 60
 bantime = 1800
-action = iptables-multiport[name=nginx-limit-conn, port="http,https", protocol=tcp]
+action = nftables[type=multiport, name=nginx-limit-conn, port="http,https", protocol=tcp]
 
 [sshd]
 enabled = true
@@ -198,10 +297,43 @@ logpath = /var/log/auth.log
 maxretry = 3
 findtime = 600
 bantime = 3600
+
+# Recidive jail: 对重复攻击者实施更长封禁
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+banaction = nftables[type=allports]
+bantime = 1w
+findtime = 1d
+maxretry = 5
 FAIL2BAN_JAIL
 
+# 更新日志路径为实际检测值（如果默认路径不对）
+AUTH_LOG_REAL=$(detect_auth_log)
+if [ "$AUTH_LOG_REAL" != "/var/log/auth.log" ]; then
+    info "检测到认证日志路径: $AUTH_LOG_REAL"
+    # 替换 jail.d 中的日志路径
+    if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
+        sed -i "s|logpath = /var/log/auth.log|logpath = $AUTH_LOG_REAL|g" \
+            /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || true
+    fi
+fi
+
+# Nginx 错误日志路径检测
+NGINX_LOG="/var/log/nginx/error.log"
+if [ ! -f "$NGINX_LOG" ] && [ -f /var/log/nginx/error.log ]; then
+    NGINX_LOG="/var/log/nginx/error.log"
+fi
+# 如果 nginx 日志不在标准位置，也更新
+if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
+    if [ "$NGINX_LOG" != "/var/log/nginx/error.log" ]; then
+        sed -i "s|logpath = /var/log/nginx/error.log|logpath = $NGINX_LOG|g" \
+            /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || true
+    fi
+fi
+
 # nginx-limit-req filter
-write_file /etc/fail2ban/filter.d/nginx-limit-req.conf <<'FLTR_REQ'
+write_file_atomic /etc/fail2ban/filter.d/nginx-limit-req.conf <<'FLTR_REQ'
 # TrafficGuard - Fail2Ban Filter: nginx-limit-req
 # 参考官方 fail2ban filter: nginx-limit-req.conf
 
@@ -217,7 +349,7 @@ datepattern = {^LN-BEG}
 FLTR_REQ
 
 # nginx-limit-conn filter
-write_file /etc/fail2ban/filter.d/nginx-limit-conn.conf <<'FLTR_CONN'
+write_file_atomic /etc/fail2ban/filter.d/nginx-limit-conn.conf <<'FLTR_CONN'
 # TrafficGuard - Fail2Ban Filter: nginx-limit-conn
 # 参考官方 fail2ban filter: nginx-limit-req.conf
 
@@ -232,11 +364,14 @@ ignoreregex =
 datepattern = {^LN-BEG}
 FLTR_CONN
 
-systemctl start fail2ban
-if systemctl is-active --quiet fail2ban 2>/dev/null; then
-    systemctl restart fail2ban
+# 启动/重启 fail2ban
+if service_is_active fail2ban "$INIT_SYSTEM"; then
+    service_control restart fail2ban "$INIT_SYSTEM" || warn "Fail2Ban 重启失败"
+else
+    service_control start fail2ban "$INIT_SYSTEM" || warn "Fail2Ban 启动失败"
 fi
 info "Fail2Ban 已就绪"
+echo ""
 
 # ── 4. 命令行工具 ────────────────────────────────────────
 info "安装命令行工具"
@@ -251,39 +386,60 @@ info "流量统计脚本已安装"
 
 # ── 6. 创建目录 ──────────────────────────────────────────
 info "创建目录"
-mkdir -p /var/lib/trafficguard/stats
-mkdir -p /var/log/trafficguard
+mkdir -p /var/lib/trafficguard/stats || warn "创建 /var/lib/trafficguard/stats 失败"
+mkdir -p /var/log/trafficguard || warn "创建 /var/log/trafficguard 失败"
 info "目录已创建"
 
 # ── 7. 定时任务 ──────────────────────────────────────────
 info "设置定时任务（每小时保存一次流量统计）"
-(crontab -l 2>/dev/null | grep -v "traffic-save-stats"; echo "0 * * * * /usr/local/bin/traffic-save-stats") | crontab -
-info "定时任务已设置"
+if (crontab -l 2>/dev/null | grep -v "traffic-save-stats"; echo "0 * * * * /usr/local/bin/traffic-save-stats") | crontab - 2>/dev/null; then
+    info "定时任务已设置"
+else
+    warn "定时任务设置失败，请手动添加:"
+    warn "  echo '0 * * * * /usr/local/bin/traffic-save-stats' | crontab -"
+fi
 
-# ── 8. nftables 流量统计 ────────────────────────────────
+# ── 8. nftables 流量统计（幂等创建） ────────────────────
 info "创建 nftables 流量统计表"
-nft add table ip trafficguard 2>/dev/null || true
-nft add chain ip trafficguard TRAFFICGUARD 2>/dev/null || true
-nft add rule ip trafficguard TRAFFICGUARD counter 2>/dev/null || true
-info "nftables 表已创建并添加 counter 规则"
+if [ "$FW_BACKEND" = "nftables" ]; then
+    nft_create_table_safe trafficguard
+    nft_create_chain_safe trafficguard TRAFFICGUARD
+
+    # 使用动态 set 统计每个 IP 的流量
+    if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard per_ip_traffic \
+            '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
+            warn "创建 nftables set 失败"
+    fi
+
+    # 规则幂等性：检查规则是否已存在
+    RULE_CHECK_STR="add @per_ip_traffic { ip saddr counter }"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_CHECK_STR"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_CHECK_STR" 2>/dev/null || \
+            warn "添加 nftables 规则失败"
+    fi
+    info "nftables 表已创建并添加 per-IP 流量统计规则"
+else
+    warn "未检测到 nftables，跳过流量统计规则创建"
+fi
 
 # ── 完成 ─────────────────────────────────────────────────
-echo
+echo ""
 info "安装完成"
-echo
+echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    TrafficGuard 已安装${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo
-echo "Nginx 配置: /etc/nginx/conf.d/trafficguard.conf"
-echo "Fail2Ban 配置: /etc/fail2ban/jail.local"
+echo ""
+echo "Nginx 配置: $NGINX_CONF_DIR/trafficguard.conf"
+echo "Fail2Ban 配置: /etc/fail2ban/jail.d/trafficguard.conf"
 echo "Fail2Ban Filter: /etc/fail2ban/filter.d/nginx-limit-*.conf"
-echo
+echo ""
 echo "快速开始:"
 echo "  tgctl                    # 打开管理界面"
 echo "  tgctl status             # 查看状态"
 echo "  tgctl list               # 查看封禁列表"
-echo
+echo ""
 echo "管理命令:"
 echo "  tgctl ban <IP>           # 手动封禁"
 echo "  tgctl unban <IP>         # 手动解封"
