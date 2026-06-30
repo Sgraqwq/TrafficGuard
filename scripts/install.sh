@@ -14,10 +14,18 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
         echo "apt"
+    elif command -v apt >/dev/null 2>&1; then
+        echo "apt"
     elif command -v dnf >/dev/null 2>&1; then
         echo "dnf"
     elif command -v yum >/dev/null 2>&1; then
         echo "yum"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    elif command -v apk >/dev/null 2>&1; then
+        echo "apk"
     else
         echo "unknown"
     fi
@@ -30,10 +38,27 @@ install_package() {
     local pkg=$1
     info "安装 $pkg"
     case "$PKG_MGR" in
-        apt) apt-get update -qq && apt-get install -y -qq "$pkg" ;;
-        dnf) dnf install -y -q "$pkg" ;;
-        yum) yum install -y -q "$pkg" ;;
-        *) error "无法自动安装 $pkg，请手动安装" ;;
+        apt)
+            apt-get update -qq && apt-get install -y -qq "$pkg"
+            ;;
+        dnf)
+            dnf install -y -q "$pkg"
+            ;;
+        yum)
+            yum install -y -q "$pkg"
+            ;;
+        zypper)
+            zypper install -y "$pkg"
+            ;;
+        pacman)
+            pacman -S --noconfirm "$pkg"
+            ;;
+        apk)
+            apk add "$pkg"
+            ;;
+        *)
+            error "无法自动安装 $pkg，请手动安装 (支持的包管理器: apt, dnf, yum, zypper, pacman, apk)"
+            ;;
     esac
 }
 
