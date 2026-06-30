@@ -7,7 +7,6 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
-prompt() { echo -e "${CYAN}[PROMPT]${NC} $*"; }
 
 [ "$(id -u)" -eq 0 ] || error "请使用 root 运行"
 
@@ -38,7 +37,7 @@ install_package() {
     esac
 }
 
-# 检查并安装依赖的函数
+# 检查并安装依赖（自动安装，无交互）
 check_dependency() {
     local cmd=$1
     local pkg=$2
@@ -49,26 +48,11 @@ check_dependency() {
         return 0
     fi
 
-    warn "$desc 未安装"
-
-    # 检测是否为交互式终端（curl | bash 管道模式无法使用 read）
-    if [ -t 0 ]; then
-        # 交互式终端，通过 /dev/tty 读取用户输入
-        local answer
-        prompt "是否安装 $desc? (y/n, 默认 y): "
-        read -r answer </dev/tty
-        answer=${answer:-y}
-        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            error "$desc 是必需的依赖，无法继续安装"
-        fi
-    else
-        # 非交互式（curl | bash），自动安装
-        info "非交互式模式，自动安装 $desc..."
-    fi
-
+    warn "$desc 未安装，自动安装中..."
     install_package "$pkg"
+
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        error "安装 $desc 失败，请手动安装后重试"
+        error "安装 $desc 失败，请手动安装后重试: $pkg"
     fi
     info "$desc 安装成功"
 }
