@@ -376,6 +376,12 @@ echo ""
 # ── 4. 命令行工具 ────────────────────────────────────────
 info "安装命令行工具"
 dl_chmod "traffic-monitor/tgctl" /usr/local/bin/tgctl
+
+# 创建符号链接到 /usr/bin，解决 sudo secure_path 问题
+if [ ! -f /usr/bin/tgctl ]; then
+    ln -sf /usr/local/bin/tgctl /usr/bin/tgctl 2>/dev/null || true
+fi
+
 info "命令行工具已安装到 /usr/local/bin/tgctl"
 
 # ── 5. 流量统计脚本 ──────────────────────────────────────

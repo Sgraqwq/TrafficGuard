@@ -21,7 +21,7 @@ TOOL_NAME="TrafficGuard"
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         echo -e "${RED}错误: 需要 root 权限运行${NC}"
-        echo "请使用: sudo tgctl"
+        echo "请使用: sudo /usr/local/bin/tgctl"
         exit 1
     fi
 }

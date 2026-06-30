@@ -201,6 +201,7 @@ echo ""
 
 # ── 8. 删除命令行工具 ────────────────────────────────────
 rm -f /usr/local/bin/tgctl 2>/dev/null || true
+rm -f /usr/bin/tgctl 2>/dev/null || true
 rm -f /usr/local/bin/traffic-save-stats 2>/dev/null || true
 rm -f /usr/local/bin/traffic-view-stats 2>/dev/null || true
 info "命令行工具已移除"
