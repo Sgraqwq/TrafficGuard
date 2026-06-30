@@ -3,10 +3,11 @@
 # 基于 Fail2Ban + Nginx 的流量监控和 IP 封禁工具
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+prompt() { echo -e "${CYAN}[PROMPT]${NC} $*"; }
 
 [ "$(id -u)" -eq 0 ] || error "请使用 root 运行"
 
