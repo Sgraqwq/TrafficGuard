@@ -50,15 +50,31 @@ write_file_atomic() {
 # ── 初始化系统检测 ──────────────────────────────────────
 # 返回值: systemd / openrc / sysvinit / unknown
 detect_init_system() {
+    # 方法1: 检查 /run/systemd/system 目录（最可靠）
+    if [ -d /run/systemd/system ]; then
+        echo "systemd"
+        return 0
+    fi
+    
+    # 方法2: 检查 systemctl 命令
     if command -v systemctl >/dev/null 2>&1; then
         echo "systemd"
-    elif command -v rc-service >/dev/null 2>&1; then
-        echo "openrc"
-    elif command -v service >/dev/null 2>&1; then
-        echo "sysvinit"
-    else
-        echo "unknown"
+        return 0
     fi
+    
+    # 方法3: 检查 OpenRC
+    if command -v rc-service >/dev/null 2>&1; then
+        echo "openrc"
+        return 0
+    fi
+    
+    # 方法4: 检查 SysVinit
+    if command -v service >/dev/null 2>&1; then
+        echo "sysvinit"
+        return 0
+    fi
+    
+    echo "unknown"
 }
 
 # ── 防火墙后端检测 ──────────────────────────────────────
@@ -126,17 +142,18 @@ service_control() {
     case "$init_system" in
         systemd)
             case "$action" in
-                enable|disable) systemctl "$action" "$service" 2>/dev/null ;;
-                *)              systemctl "$action" "$service" 2>/dev/null ;;
+                enable|disable) systemctl "$action" "$service" ;;
+                *)              systemctl "$action" "$service" ;;
             esac
             ;;
         openrc)
-            rc-service "$service" "$action" 2>/dev/null
+            rc-service "$service" "$action"
             ;;
         sysvinit)
-            service "$service" "$action" 2>/dev/null
+            service "$service" "$action"
             ;;
         *)
+            warn "不支持的 init 系统: $init_system"
             return 1
             ;;
     esac

@@ -365,12 +365,35 @@ datepattern = {^LN-BEG}
 FLTR_CONN
 
 # 启动/重启 fail2ban
+info "启动 Fail2Ban..."
 if service_is_active fail2ban "$INIT_SYSTEM"; then
-    service_control restart fail2ban "$INIT_SYSTEM" || warn "Fail2Ban 重启失败"
+    if service_control restart fail2ban "$INIT_SYSTEM"; then
+        info "Fail2Ban 已重启"
+    else
+        warn "Fail2Ban 重启失败，尝试手动启动..."
+        service_control start fail2ban "$INIT_SYSTEM" || {
+            warn "Fail2Ban 启动失败，请手动检查:"
+            warn "  fail2ban-client -t  # 测试配置"
+            warn "  fail2ban-server     # 前台运行查看错误"
+        }
+    fi
 else
-    service_control start fail2ban "$INIT_SYSTEM" || warn "Fail2Ban 启动失败"
+    if service_control start fail2ban "$INIT_SYSTEM"; then
+        info "Fail2Ban 已启动"
+    else
+        warn "Fail2Ban 启动失败，请手动检查:"
+        warn "  fail2ban-client -t  # 测试配置"
+        warn "  fail2ban-server     # 前台运行查看错误"
+    fi
 fi
-info "Fail2Ban 已就绪"
+
+# 验证 fail2ban 运行状态
+if service_is_active fail2ban "$INIT_SYSTEM"; then
+    info "Fail2Ban 运行中"
+    fail2ban-client status 2>/dev/null | sed 's/^/  /' || true
+else
+    warn "Fail2Ban 未运行"
+fi
 echo ""
 
 # ── 4. 命令行工具 ────────────────────────────────────────
