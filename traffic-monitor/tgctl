@@ -898,7 +898,7 @@ check_update() {
     
     # 获取最新版本号（从 common.sh 中提取）
     local latest_version
-    latest_version=$(curl -s --connect-timeout 10 --max-time 30 "${TG_REPO}/raw/main/scripts/lib/common.sh" 2>/dev/null | grep -oP 'TG_VERSION="\K[^"]+' || true)
+    latest_version=$(curl -s --connect-timeout 10 --max-time 30 "${TG_REPO}/raw/main/scripts/lib/common.sh" 2>/dev/null | grep 'TG_VERSION=' | head -1 | sed 's/.*TG_VERSION="\([^"]*\)".*/\1/' || true)
     
     if [ -z "$latest_version" ]; then
         echo -e "${RED}无法获取最新版本信息${NC}"
