@@ -97,7 +97,7 @@ if [ -n "$INBOUND_DATA" ] || [ -n "$OUTBOUND_DATA" ]; then
             out_pkts=0
             out_bytes=0
             if [ -n "$ip" ]; then
-                out_line=$(grep "^$ip " "$OUTBOUND_FILE" 2>/dev/null || true)
+                out_line=$(grep -F "$ip " "$OUTBOUND_FILE" 2>/dev/null | head -1 || true)
                 if [ -n "$out_line" ]; then
                     out_pkts=$(echo "$out_line" | awk '{print $2}')
                     out_bytes=$(echo "$out_line" | awk '{print $3}')
@@ -110,7 +110,7 @@ if [ -n "$INBOUND_DATA" ] || [ -n "$OUTBOUND_DATA" ]; then
     # 添加仅在出站中出现的 IP
     if [ -s "$OUTBOUND_FILE" ]; then
         while read -r ip out_pkts out_bytes; do
-            if [ -n "$ip" ] && ! grep -q "^$ip " "$MERGED_FILE" 2>/dev/null; then
+            if [ -n "$ip" ] && ! grep -qF "$ip " "$MERGED_FILE" 2>/dev/null; then
                 echo "$ip 0 0 ${out_pkts:-0} ${out_bytes:-0}"
             fi
         done < "$OUTBOUND_FILE" >> "$MERGED_FILE" 2>/dev/null || true

@@ -206,7 +206,12 @@ if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
 fi
 
 SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
-if [ "${TG_IS_UPDATE:-0}" -eq 0 ] && ([ -t 0 ] || [ -c /dev/tty ]); then
+# 热更新模式：自动使用已安装的端口，不出提示
+if [ "${TG_IS_UPDATE:-0}" -eq 1 ]; then
+    if [ -n "$EXISTING_SSH_PORT" ]; then
+        SSH_PORT="$EXISTING_SSH_PORT"
+    fi
+elif [ -t 0 ] || [ -c /dev/tty ]; then
     echo ""
     if [ -n "$EXISTING_SSH_PORT" ]; then
         info "检测到已安装的 SSH 端口: $EXISTING_SSH_PORT"
@@ -470,7 +475,6 @@ if [ "$FW_BACKEND" = "nftables" ]; then
     if [ -f /etc/trafficguard/whitelist.txt ]; then
         info "从持久化文件恢复白名单 IP..."
         tg_load_whitelist
-        local restored_count
         restored_count=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
         info "白名单已恢复: ${restored_count:-0} 个 IP"
     fi
@@ -498,7 +502,6 @@ if [ "$FW_BACKEND" = "nftables" ]; then
     if [ -f /etc/trafficguard/manual_banned.txt ]; then
         info "从持久化文件恢复手动黑名单 IP..."
         tg_load_manual_banned
-        local banned_count
         banned_count=$(nft list set ip trafficguard manual_banned 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
         info "手动黑名单已恢复: ${banned_count:-0} 个 IP"
     fi

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.2.2"
+TG_VERSION="1.2.3"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -340,10 +340,15 @@ whitelist_management() {
         3)
             echo
             local current_ip=""
+            # 先尝试环境变量（直连 SSH）
             if [ -n "${SSH_CLIENT:-}" ]; then
                 current_ip=$(echo "$SSH_CLIENT" | awk '{print $1}')
             elif [ -n "${SSH_CONNECTION:-}" ]; then
                 current_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+            fi
+            # sudo 下环境变量会被清除，用 who -m 获取真实 IP
+            if [ -z "$current_ip" ]; then
+                current_ip=$(who -m 2>/dev/null | awk '{print $NF}' | tr -d '()' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
             fi
             
             if [ -n "$current_ip" ]; then
@@ -375,7 +380,7 @@ uninstall_trafficguard() {
     echo -e "${YELLOW}此操作将完全卸载 TrafficGuard，并删除所有数据（不留备份）。${NC}"
     echo -e "${YELLOW}包含所有的历史流量日志、已被封禁的 IP 名单等，都会被永久销毁。${NC}"
     echo
-    read -p "您确定要卸载吗？[y/N]: " confirm
+    read -p "您确定要卸载吗？[y/N]: " confirm || return
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${GREEN}已取消卸载操作。${NC}"
         return
@@ -386,7 +391,7 @@ uninstall_trafficguard() {
     # 1. 停止定时任务
     echo -e "[-] 清理定时任务..."
     if command -v crontab >/dev/null 2>&1; then
-        crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | crontab - || true
+        crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | grep -v 'tgctl restore' | crontab - || true
     fi
 
     # 2. 停止 Fail2Ban
@@ -1187,9 +1192,12 @@ check_update() {
     echo -e "${GREEN}下载完成，正在静默应用更新...${NC}"
     echo
     
+    # 注入 TG_IS_UPDATE=1 到脚本中（同步 env_reset 策略，最可靠的传递方式）
+    sed -i '2a export TG_IS_UPDATE=1' "$tmp_script" 2>/dev/null || true
+    
     # 执行安装脚本 (热更新模式)
     chmod +x "$tmp_script"
-    if sudo env TG_IS_UPDATE=1 bash "$tmp_script"; then
+    if sudo bash "$tmp_script"; then
         rm -f "$tmp_script"
         echo
         echo -e "${GREEN}更新成功！正在重新加载管理台...${NC}"
