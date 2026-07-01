@@ -489,8 +489,8 @@ show_traffic() {
     
     echo -e "${BOLD}Top 20 流量 IP:${NC}"
     echo
-    printf "%-18s %-12s %-12s %-12s %-12s\n" "IP 地址" "入站包" "入站字节" "出站包" "出站字节"
-    echo "--------------------------------------------------------------------"
+    printf "%-18s %-10s %-10s %-10s %-10s\n" "IP 地址" "入站包" "入站MB" "出站包" "出站MB"
+    echo "----------------------------------------------------------------"
     
     # 获取入站流量
     INBOUND=$(nft list set ip trafficguard inbound_traffic 2>/dev/null | \
@@ -552,7 +552,7 @@ show_traffic() {
             # 转换为 MB
             in_mb=$((in_bytes / 1048576))
             out_mb=$((out_bytes / 1048576))
-            printf "%-18s %-12s %-10s MB %-10s %-10s MB\n" "$ip" "$in_pkts" "$in_mb" "$out_pkts" "$out_mb"
+            printf "%-18s %-10s %-10s %-10s %-10s\n" "$ip" "$in_pkts" "$in_mb" "$out_pkts" "$out_mb"
         done
     fi
     
@@ -560,6 +560,8 @@ show_traffic() {
     rm -rf "$TMPDIR" 2>/dev/null || true
     
     echo
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 6. 查看历史流量
