@@ -398,12 +398,20 @@ mkdir -p /var/log/trafficguard || warn "创建 /var/log/trafficguard 失败"
 info "目录已创建"
 
 # ── 7. 定时任务 
-info "设置定时任务（每小时保存一次流量统计）"
-if (crontab -l 2>/dev/null | grep -v "traffic-save-stats"; echo "0 * * * * /usr/local/bin/traffic-save-stats") | crontab - 2>/dev/null; then
-    info "定时任务已设置"
+info "设置定时任务（每小时统计 + 开机自动恢复）"
+local new_crontab
+new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tgctl restore" || true)
+{
+    echo "$new_crontab"
+    echo "0 * * * * /usr/local/bin/traffic-save-stats"
+    echo "@reboot /usr/local/bin/tgctl restore"
+} | crontab - 2>/dev/null
+if [ $? -eq 0 ]; then
+    info "定时任务已设置（每小时统计 + 开机自动恢复规则）"
 else
     warn "定时任务设置失败，请手动添加:"
-    warn "  echo '0 * * * * /usr/local/bin/traffic-save-stats' | crontab -"
+    warn "  0 * * * * /usr/local/bin/traffic-save-stats"
+    warn "  @reboot /usr/local/bin/tgctl restore"
 fi
 
 # ── 8. nftables 流量统计与纯网络层限流 (幂等创建) 
@@ -448,6 +456,14 @@ if [ "$FW_BACKEND" = "nftables" ]; then
         nft add set ip trafficguard whitelist '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
             warn "创建 nftables 白名单 set 失败"
     fi
+    # 从持久化文件恢复白名单 IP（防止重启/重装后丢失）
+    if [ -f /etc/trafficguard/whitelist.txt ]; then
+        info "从持久化文件恢复白名单 IP..."
+        tg_load_whitelist
+        local restored_count
+        restored_count=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+        info "白名单已恢复: ${restored_count:-0} 个 IP"
+    fi
     # 自动加入管理员 IP（幂等：先检查是否已存在）
     if [ "$ADD_WHITELIST" = "y" ] && [ -n "$ADMIN_IP" ]; then
         if ! nft list set ip trafficguard whitelist 2>/dev/null | grep -qE "(^|[^0-9.])${ADMIN_IP//./\\.}([^0-9.]|$)"; then
@@ -456,6 +472,8 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             info "管理员 IP $ADMIN_IP 已在白名单中"
         fi
     fi
+    # 持久化白名单到文件
+    tg_save_whitelist
     RULE_WHITELIST="ip saddr @whitelist accept"
     if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_WHITELIST"; then
         nft add rule ip trafficguard TRAFFICGUARD "$RULE_WHITELIST" 2>/dev/null || warn "添加白名单放行规则失败"
@@ -465,6 +483,14 @@ if [ "$FW_BACKEND" = "nftables" ]; then
     if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
         nft add set ip trafficguard manual_banned '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
             warn "创建 nftables 手动黑名单 set 失败"
+    fi
+    # 从持久化文件恢复手动黑名单 IP
+    if [ -f /etc/trafficguard/manual_banned.txt ]; then
+        info "从持久化文件恢复手动黑名单 IP..."
+        tg_load_manual_banned
+        local banned_count
+        banned_count=$(nft list set ip trafficguard manual_banned 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+        info "手动黑名单已恢复: ${banned_count:-0} 个 IP"
     fi
     RULE_MANUAL="ip saddr @manual_banned drop"
     if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_MANUAL"; then

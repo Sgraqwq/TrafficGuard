@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.1.1"
+TG_VERSION="1.2.0"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -22,6 +22,139 @@ get_config_int() {
         fi
     fi
     echo "$default_val"
+}
+
+# ── IP 列表持久化（白名单/手动黑名单）
+# nftables 内核内存中的 IP 列表在重启或重装后会丢失，
+# 通过磁盘文件持久化，开机时自动恢复。
+
+TG_WHITELIST_FILE="/etc/trafficguard/whitelist.txt"
+TG_BANNED_FILE="/etc/trafficguard/manual_banned.txt"
+TG_CONF_FILE="/etc/trafficguard/trafficguard.conf"
+
+tg_save_whitelist() {
+    mkdir -p /etc/trafficguard 2>/dev/null || true
+    if nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        nft list set ip trafficguard whitelist 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$TG_WHITELIST_FILE" 2>/dev/null || true
+    fi
+}
+
+tg_load_whitelist() {
+    [ -f "$TG_WHITELIST_FILE" ] || return 0
+    nft list set ip trafficguard whitelist >/dev/null 2>&1 || return 0
+    local ip
+    while read -r ip; do
+        [ -z "$ip" ] && continue
+        nft add element ip trafficguard whitelist "{ $ip }" 2>/dev/null || true
+    done < "$TG_WHITELIST_FILE"
+}
+
+tg_save_manual_banned() {
+    mkdir -p /etc/trafficguard 2>/dev/null || true
+    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        nft list set ip trafficguard manual_banned 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$TG_BANNED_FILE" 2>/dev/null || true
+    fi
+}
+
+tg_load_manual_banned() {
+    [ -f "$TG_BANNED_FILE" ] || return 0
+    nft list set ip trafficguard manual_banned >/dev/null 2>&1 || return 0
+    local ip
+    while read -r ip; do
+        [ -z "$ip" ] && continue
+        nft add element ip trafficguard manual_banned "{ $ip }" 2>/dev/null || true
+    done < "$TG_BANNED_FILE"
+}
+
+# 开机时自动重建 nftables 规则并恢复 IP 列表
+restore_nft_rules() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    恢复 TrafficGuard 防火墙规则${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+
+    if ! command -v nft >/dev/null 2>&1; then
+        echo -e "${RED}[错误] nftables 未安装，无法恢复规则${NC}"
+        return 1
+    fi
+
+    # 创建表（幂等）
+    if ! nft list tables 2>/dev/null | grep -qF "table ip trafficguard"; then
+        nft add table ip trafficguard 2>/dev/null || { echo -e "${RED}创建表失败${NC}"; return 1; }
+        echo -e "${GREEN}已创建 nftables 表 trafficguard${NC}"
+    fi
+
+    # 创建 hook 链（幂等）
+    if ! nft list chain ip trafficguard TRAFFICGUARD >/dev/null 2>&1; then
+        nft add chain ip trafficguard TRAFFICGUARD \
+            '{ type filter hook input priority 0 ; policy accept ; }' 2>/dev/null || { echo -e "${RED}创建链失败${NC}"; return 1; }
+        echo -e "${GREEN}已创建链 TRAFFICGUARD${NC}"
+    fi
+
+    # 创建集合（幂等）
+    if ! nft list set ip trafficguard inbound_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard inbound_traffic '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || true
+    fi
+    if ! nft list set ip trafficguard outbound_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard outbound_traffic '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || true
+    fi
+    if ! nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        nft add set ip trafficguard whitelist '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || true
+    fi
+    if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        nft add set ip trafficguard manual_banned '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || true
+    fi
+    if ! nft list set ip trafficguard conn_limit >/dev/null 2>&1; then
+        nft add set ip trafficguard conn_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null || true
+    fi
+    if ! nft list set ip trafficguard rate_limit >/dev/null 2>&1; then
+        nft add set ip trafficguard rate_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null || true
+    fi
+
+    # 添加规则（幂等：通过 @setname 唯一标识检查）
+    local chain_rules
+    chain_rules=$(nft list chain ip trafficguard TRAFFICGUARD 2>/dev/null || true)
+
+    echo "$chain_rules" | grep -q '@inbound_traffic' || \
+        nft add rule ip trafficguard TRAFFICGUARD 'add @inbound_traffic { ip daddr counter }' 2>/dev/null || true
+    echo "$chain_rules" | grep -q '@outbound_traffic' || \
+        nft add rule ip trafficguard TRAFFICGUARD 'add @outbound_traffic { ip saddr counter }' 2>/dev/null || true
+    echo "$chain_rules" | grep -q '@whitelist' || \
+        nft add rule ip trafficguard TRAFFICGUARD 'ip saddr @whitelist accept' 2>/dev/null || true
+    echo "$chain_rules" | grep -q '@manual_banned' || \
+        nft add rule ip trafficguard TRAFFICGUARD 'ip saddr @manual_banned drop' 2>/dev/null || true
+
+    # 读取配置中的限流参数
+    local conn_limit rate_limit rate_burst
+    conn_limit=$(get_config_int "TG_CONN_LIMIT" "$TG_CONF_FILE" "100")
+    rate_limit=$(get_config_int "TG_RATE_LIMIT" "$TG_CONF_FILE" "50")
+    rate_burst=$(get_config_int "TG_RATE_BURST" "$TG_CONF_FILE" "100")
+
+    if [ "$conn_limit" -gt 0 ]; then
+        echo "$chain_rules" | grep -q '@conn_limit' || \
+            nft add rule ip trafficguard TRAFFICGUARD "ct state new add @conn_limit { ip saddr ct count over ${conn_limit} } drop" 2>/dev/null || true
+    fi
+    if [ "$rate_limit" -gt 0 ]; then
+        echo "$chain_rules" | grep -q '@rate_limit' || \
+            nft add rule ip trafficguard TRAFFICGUARD "ct state new update @rate_limit { ip saddr limit rate over ${rate_limit}/second burst ${rate_burst} packets } drop" 2>/dev/null || true
+    fi
+
+    # 恢复 IP 列表
+    local wl_count=0 bn_count=0
+    if [ -f "$TG_WHITELIST_FILE" ]; then
+        tg_load_whitelist
+        wl_count=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+    fi
+    if [ -f "$TG_BANNED_FILE" ]; then
+        tg_load_manual_banned
+        bn_count=$(nft list set ip trafficguard manual_banned 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+    fi
+
+    echo -e "${GREEN}规则恢复完成${NC}"
+    echo "  白名单: ${wl_count} 个 IP"
+    echo "  手动黑名单: ${bn_count} 个 IP"
 }
 
 # ── 初始化系统检测
@@ -182,6 +315,7 @@ whitelist_management() {
             if [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then
                 if nft add element ip trafficguard whitelist "{ $ip }" 2>/dev/null; then
                     echo -e "${GREEN}已将 $ip 加入全局白名单${NC}"
+                    tg_save_whitelist
                 else
                     echo -e "${RED}添加失败，请检查防火墙状态${NC}"
                 fi
@@ -195,6 +329,7 @@ whitelist_management() {
             if [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then
                 if nft delete element ip trafficguard whitelist "{ $ip }" 2>/dev/null; then
                     echo -e "${GREEN}已将 $ip 从白名单中移除${NC}"
+                    tg_save_whitelist
                 else
                     echo -e "${RED}移除失败，该 IP 可能不在白名单中${NC}"
                 fi
@@ -215,6 +350,7 @@ whitelist_management() {
                 echo -e "检测到您当前登录的 IP 为: ${YELLOW}$current_ip${NC}"
                 if nft add element ip trafficguard whitelist "{ $current_ip }" 2>/dev/null; then
                     echo -e "${GREEN}已将 $current_ip 加入全局白名单${NC}"
+                    tg_save_whitelist
                 else
                     echo -e "${RED}添加失败，该 IP 可能已经在白名单中，或防火墙状态异常${NC}"
                 fi
@@ -436,6 +572,7 @@ ban_ip() {
     if [[ "$choice" == "1" || "$choice" == "3" ]]; then
         if nft add element ip trafficguard manual_banned "{ $ip }" 2>/dev/null; then
             echo -e "${GREEN}已封禁 $ip (全局黑名单)${NC}"
+            tg_save_manual_banned
         else
             echo -e "${RED}封禁失败: $ip (全局黑名单)${NC}"
         fi
@@ -506,6 +643,7 @@ unban_ip() {
     if [[ "$choice" == "1" || "$choice" == "3" ]]; then
         if nft delete element ip trafficguard manual_banned "{ $ip }" 2>/dev/null; then
             echo -e "${GREEN}已解封 $ip (全局黑名单)${NC}"
+            tg_save_manual_banned
         else
             echo -e "${YELLOW}解封失败/未被封禁: $ip (全局黑名单)${NC}"
         fi
@@ -937,6 +1075,7 @@ show_usage() {
     echo "  config        配置管理"
     echo "  service       服务管理"
     echo "  update        检查并更新 TrafficGuard"
+    echo "  restore       恢复防火墙规则和 IP 列表（开机自动执行）"
     echo "  version       显示当前版本"
     echo "  help          显示此帮助信息"
 }
@@ -1084,6 +1223,7 @@ main() {
             config)   config_management ;;
             service)  service_management ;;
             update)   check_update ;;
+            restore)  restore_nft_rules ;;
             version)
                 echo -e "TrafficGuard 版本: ${GREEN}$TG_VERSION${NC}"
                 ;;

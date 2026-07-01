@@ -39,7 +39,7 @@ info "开始纯净卸载..."
 # 1. 停止定时任务
 info "[-] 清理定时任务..."
 if command -v crontab >/dev/null 2>&1; then
-    crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | crontab - || true
+    crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | grep -v 'tgctl restore' | crontab - || true
 fi
 
 # 2. 停止 Fail2Ban

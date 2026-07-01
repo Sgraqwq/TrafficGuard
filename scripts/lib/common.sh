@@ -3,7 +3,7 @@
 # 被 install.sh 和 uninstall.sh 加载
 
 # ── 版本信息
-export TG_VERSION="1.1.1"
+export TG_VERSION="1.2.0"
 export TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # ── 颜色与日志 
@@ -262,4 +262,60 @@ check_nftables_available() {
         fi
         info "nftables 内核模块加载成功"
     fi
+}
+
+# ── IP 列表持久化
+# 白名单和手动黑名单的 IP 存储在 nftables 内核内存中，
+# 重启或重装后会丢失。以下函数将 IP 列表持久化到磁盘文件，
+# 并在安装/启动时恢复。
+
+TG_WHITELIST_FILE="/etc/trafficguard/whitelist.txt"
+TG_BANNED_FILE="/etc/trafficguard/manual_banned.txt"
+
+# 保存白名单 IP 到文件
+tg_save_whitelist() {
+    mkdir -p /etc/trafficguard 2>/dev/null || true
+    if nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        nft list set ip trafficguard whitelist 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$TG_WHITELIST_FILE" 2>/dev/null || true
+    fi
+}
+
+# 从文件恢复白名单 IP 到 nftables
+tg_load_whitelist() {
+    if [ ! -f "$TG_WHITELIST_FILE" ]; then
+        return 0
+    fi
+    if ! nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        return 0
+    fi
+    local ip
+    while read -r ip; do
+        [ -z "$ip" ] && continue
+        nft add element ip trafficguard whitelist "{ $ip }" 2>/dev/null || true
+    done < "$TG_WHITELIST_FILE"
+}
+
+# 保存手动黑名单 IP 到文件
+tg_save_manual_banned() {
+    mkdir -p /etc/trafficguard 2>/dev/null || true
+    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        nft list set ip trafficguard manual_banned 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$TG_BANNED_FILE" 2>/dev/null || true
+    fi
+}
+
+# 从文件恢复手动黑名单 IP 到 nftables
+tg_load_manual_banned() {
+    if [ ! -f "$TG_BANNED_FILE" ]; then
+        return 0
+    fi
+    if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        return 0
+    fi
+    local ip
+    while read -r ip; do
+        [ -z "$ip" ] && continue
+        nft add element ip trafficguard manual_banned "{ $ip }" 2>/dev/null || true
+    done < "$TG_BANNED_FILE"
 }

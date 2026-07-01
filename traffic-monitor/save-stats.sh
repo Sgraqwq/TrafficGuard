@@ -167,6 +167,9 @@ if [ -n "$TRAFFIC_DATA" ]; then
                         echo "[$NOW] [警告] IP $ip 入站流量超限 ($((in_bytes/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
                         nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
                             echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
+                        # 持久化黑名单到文件（防止重启后丢失）
+                        nft list set ip trafficguard manual_banned 2>/dev/null \
+                            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > /etc/trafficguard/manual_banned.txt 2>/dev/null || true
                     fi
                 fi
             fi
