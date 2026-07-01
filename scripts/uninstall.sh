@@ -70,11 +70,6 @@ fi
 info "[-] 清理 Fail2Ban 配置与数据..."
 rm -f /etc/fail2ban/jail.d/trafficguard.conf
 
-if [ -f /etc/fail2ban/jail.local ]; then
-    sed -i '/\[nginx-limit-req\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
-    sed -i '/\[nginx-limit-conn\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
-fi
-
 if [ -f /var/lib/fail2ban/fail2ban.sqlite3 ]; then
     rm -f /var/lib/fail2ban/fail2ban.sqlite3 2>/dev/null || true
 fi

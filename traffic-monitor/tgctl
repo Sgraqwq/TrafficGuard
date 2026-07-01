@@ -434,11 +434,7 @@ uninstall_trafficguard() {
     # 4. 清理 Fail2Ban 配置
     echo -e "[-] 清理 Fail2Ban 配置与数据..."
     rm -f /etc/fail2ban/jail.d/trafficguard.conf
-    # 清理残留的 jail.local 规则
-    if [ -f /etc/fail2ban/jail.local ]; then
-        sed -i '/\[nginx-limit-req\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
-        sed -i '/\[nginx-limit-conn\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
-    fi
+
     # 尝试重启 Fail2Ban 以恢复干净状态
     if command -v systemctl >/dev/null 2>&1; then
         systemctl start fail2ban >/dev/null 2>&1 || true
@@ -1129,17 +1125,11 @@ quick_ban_ip() {
         echo -e "${RED}无效的 IP 地址格式: $ip${NC}"
         exit 1
     fi
-    # 只封禁实际存在的 jail，跳过不存在的（防止假阳性错误提示）
-    for jail in nginx-limit-req nginx-limit-conn sshd; do
-        if ! fail2ban-client status "$jail" >/dev/null 2>&1; then
-            continue
-        fi
-        if fail2ban-client set "$jail" banip "$ip" 2>/dev/null; then
-            echo -e "${GREEN}已封禁 $ip (jail: $jail)${NC}"
-        else
-            echo -e "${RED}封禁失败: $ip (jail: $jail)${NC}"
-        fi
-    done
+    if fail2ban-client set sshd banip "$ip" 2>/dev/null; then
+        echo -e "${GREEN}已封禁 $ip (sshd)${NC}"
+    else
+        echo -e "${RED}封禁失败: $ip (sshd)${NC}"
+    fi
 }
 
 # 快速解封 IP（非交互式）
@@ -1149,17 +1139,11 @@ quick_unban_ip() {
         echo -e "${RED}无效的 IP 地址格式: $ip${NC}"
         exit 1
     fi
-    # 只解封实际存在的 jail，跳过不存在的
-    for jail in nginx-limit-req nginx-limit-conn sshd; do
-        if ! fail2ban-client status "$jail" >/dev/null 2>&1; then
-            continue
-        fi
-        if fail2ban-client set "$jail" unbanip "$ip" 2>/dev/null; then
-            echo -e "${GREEN}已解封 $ip (jail: $jail)${NC}"
-        else
-            echo -e "${RED}解封失败: $ip (jail: $jail)${NC}"
-        fi
-    done
+    if fail2ban-client set sshd unbanip "$ip" 2>/dev/null; then
+        echo -e "${GREEN}已解封 $ip (sshd)${NC}"
+    else
+        echo -e "${RED}解封失败: $ip (sshd)${NC}"
+    fi
 }
 
 # 11. 检查更新
