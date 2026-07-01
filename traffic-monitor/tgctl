@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.0.3"
+TG_VERSION="1.0.4"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -501,8 +501,8 @@ show_traffic() {
     
     echo -e "${BOLD}Top 20 流量 IP:${NC}"
     echo
-    echo "IP 地址          入站包      入站MB      出站包      出站MB"
-    echo "----------------------------------------------------------------"
+    echo "IP 地址        入站包    入站流量  出站包    出站流量"
+    echo "----------------------------------------------------"
     
     # 获取入站流量
     INBOUND=$(nft list set ip trafficguard inbound_traffic 2>/dev/null | \
@@ -564,7 +564,7 @@ show_traffic() {
             # 转换为 MB
             in_mb=$((in_bytes / 1048576))
             out_mb=$((out_bytes / 1048576))
-            printf "%-16s %-10s %-10sMB %-10s %-10sMB\n" "$ip" "$in_pkts" "$in_mb" "$out_pkts" "$out_mb"
+            printf "%-14s %-10s %-10s %-10s %-10s\n" "$ip" "$in_pkts" "${in_mb}MB" "$out_pkts" "${out_mb}MB"
         done
     fi
     
