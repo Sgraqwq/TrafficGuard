@@ -382,7 +382,15 @@ show_ban_list() {
         jail=$(echo "$jail" | xargs)
         if [ -n "$jail" ]; then
             echo -e "${BOLD}[Fail2Ban] Jail: $jail${NC}"
-            fail2ban-client status "$jail" 2>/dev/null | grep -E "Currently banned|Total banned|Banned IP list" | sed 's/^/  /'
+            local f2b_status
+            f2b_status=$(fail2ban-client status "$jail" 2>/dev/null)
+            local currently_banned total_banned banned_ips
+            currently_banned=$(echo "$f2b_status" | grep "Currently banned" | awk -F: '{print $2}' | xargs)
+            total_banned=$(echo "$f2b_status" | grep "Total banned" | awk -F: '{print $2}' | xargs)
+            banned_ips=$(echo "$f2b_status" | grep "Banned IP list" | sed 's/.*Banned IP list://;s/^[[:space:]]*//' | xargs)
+            echo "  当前封禁: ${currently_banned:-0} 个 IP"
+            echo "  历史封禁: ${total_banned:-0} 个 IP"
+            echo "  封禁列表: ${banned_ips:-(无)}"
             echo
         fi
     done
@@ -682,7 +690,15 @@ ssh_protection() {
     echo -e "${BOLD}SSH 防护状态:${NC}"
     if fail2ban-client status sshd >/dev/null 2>&1; then
         echo -e "  状态: ${GREEN}已启用${NC}"
-        fail2ban-client status sshd 2>/dev/null | grep -E "Currently banned|Total banned|Banned IP list" | sed 's/^/  /'
+        local f2b_status
+        f2b_status=$(fail2ban-client status sshd 2>/dev/null)
+        local currently_banned total_banned banned_ips
+        currently_banned=$(echo "$f2b_status" | grep "Currently banned" | awk -F: '{print $2}' | xargs)
+        total_banned=$(echo "$f2b_status" | grep "Total banned" | awk -F: '{print $2}' | xargs)
+        banned_ips=$(echo "$f2b_status" | grep "Banned IP list" | sed 's/.*Banned IP list://;s/^[[:space:]]*//' | xargs)
+        echo "  当前封禁: ${currently_banned:-0} 个 IP"
+        echo "  历史封禁: ${total_banned:-0} 个 IP"
+        echo "  封禁列表: ${banned_ips:-(无)}"
     else
         echo -e "  状态: ${YELLOW}未启用${NC}"
     fi
