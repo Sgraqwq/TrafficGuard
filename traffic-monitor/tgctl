@@ -1018,10 +1018,6 @@ main() {
                 echo -e "${RED}无效选择${NC}"
                 ;;
         esac
-        
-        echo
-        echo -e "${YELLOW}按回车继续...${NC}"
-        read || true
     done
 }
 
