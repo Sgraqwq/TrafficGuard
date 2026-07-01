@@ -199,14 +199,27 @@ echo ""
 
 # ── 2. 收集配置参数 
 info "配置参数..."
+
+# 检测已安装的 SSH 端口
+EXISTING_SSH_PORT=""
+if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
+    EXISTING_SSH_PORT=$(grep -E '^port\s*=' /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null | head -1 | awk '{print $3}' || true)
+fi
+
 SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
 if [ -t 0 ] || [ -c /dev/tty ]; then
     echo ""
-    input_port=""
-    echo -n "请输入需要防护的 SSH 端口 [默认 22]: "
+    if [ -n "$EXISTING_SSH_PORT" ]; then
+        info "检测到已安装的 SSH 端口: $EXISTING_SSH_PORT"
+        echo -n "请输入需要防护的 SSH 端口 [直接回车保持 $EXISTING_SSH_PORT]: "
+    else
+        echo -n "请输入需要防护的 SSH 端口 [默认 22]: "
+    fi
     read input_port < /dev/tty || true
     if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
         SSH_PORT="$input_port"
+    elif [ -n "$EXISTING_SSH_PORT" ]; then
+        SSH_PORT="$EXISTING_SSH_PORT"
     fi
 fi
 if [ "$SSH_PORT" = "ssh" ] || [ "$SSH_PORT" = "22" ]; then
