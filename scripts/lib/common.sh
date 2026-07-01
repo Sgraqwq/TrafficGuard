@@ -3,7 +3,7 @@
 # 被 install.sh 和 uninstall.sh 加载
 
 # ── 版本信息
-export TG_VERSION="1.0.2"
+export TG_VERSION="1.0.3"
 export TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # ── 颜色与日志 
