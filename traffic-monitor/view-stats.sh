@@ -48,8 +48,8 @@ show_date_traffic() {
         return
     fi
     
-    echo -e "${BOLD}时间戳                 IP 地址              入站数据包      入站字节数      出站数据包      出站字节数${NC}"
-    echo "----------------------------------------------------------------------------------------------------"
+    echo -e "${BOLD}时间戳                 IP 地址              入站包    入站字节    出站包    出站字节${NC}"
+    echo "------------------------------------------------------------------------"
     
     # 解析并显示数据
     awk '
@@ -60,7 +60,7 @@ show_date_traffic() {
     }
     /^[0-9]/ {
         # 数据行：IP in_pkts in_bytes out_pkts out_bytes
-        printf "%-23s %-18s %-15s %-15s %-15s %-15s\n", timestamp, $1, ($2 ? $2 : "0"), ($3 ? $3 : "0"), ($4 ? $4 : "0"), ($5 ? $5 : "0")
+        printf "%-23s %-18s %-10s %-10s %-10s %-10s\n", timestamp, $1, ($2 ? $2 : "0"), ($3 ? $3 : "0"), ($4 ? $4 : "0"), ($5 ? $5 : "0")
     }
     ' "$stats_file"
     
@@ -120,8 +120,8 @@ show_realtime() {
         return
     fi
     
-    echo -e "${BOLD}IP 地址              入站数据包      入站字节数      出站数据包      出站字节数${NC}"
-    echo "----------------------------------------------------------------------------------------"
+    echo -e "${BOLD}IP 地址              入站包    入站字节    出站包    出站字节${NC}"
+    echo "--------------------------------------------------------------------"
     
     # 获取入站流量
     INBOUND=$(nft list set ip trafficguard inbound_traffic 2>/dev/null | \
@@ -180,7 +180,7 @@ show_realtime() {
     # 显示结果
     if [ -s "$MERGED_FILE" ]; then
         sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
-            printf "%-20s %-15s %-15s %-15s %-15s\n" "$ip" "$in_pkts" "$in_bytes" "$out_pkts" "$out_bytes"
+            printf "%-18s %-10s %-10s %-10s %-10s\n" "$ip" "$in_pkts" "$in_bytes" "$out_pkts" "$out_bytes"
         done
     fi
     

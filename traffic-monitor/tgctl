@@ -489,8 +489,8 @@ show_traffic() {
     
     echo -e "${BOLD}Top 20 流量 IP:${NC}"
     echo
-    printf "%-20s %-15s %-15s %-15s %-15s\n" "IP 地址" "入站数据包" "入站字节数" "出站数据包" "出站字节数"
-    echo "----------------------------------------------------------------------------------------"
+    printf "%-18s %-12s %-12s %-12s %-12s\n" "IP 地址" "入站包" "入站字节" "出站包" "出站字节"
+    echo "--------------------------------------------------------------------"
     
     # 获取入站流量
     INBOUND=$(nft list set ip trafficguard inbound_traffic 2>/dev/null | \
@@ -549,7 +549,7 @@ show_traffic() {
     # 显示结果
     if [ -s "$MERGED_FILE" ]; then
         sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
-            printf "%-20s %-15s %-15s %-15s %-15s\n" "$ip" "$in_pkts" "$in_bytes" "$out_pkts" "$out_bytes"
+            printf "%-18s %-12s %-12s %-12s %-12s\n" "$ip" "$in_pkts" "$in_bytes" "$out_pkts" "$out_bytes"
         done
     fi
     
@@ -648,6 +648,8 @@ ssh_protection() {
             echo -e "${BOLD}最近 SSH 失败登录:${NC}"
             grep "Failed password" /var/log/auth.log 2>/dev/null | tail -10 || echo "无法读取日志"
             echo
+            echo -e "${YELLOW}按回车返回...${NC}"
+            read || true
             ;;
         2)
             echo
@@ -661,12 +663,17 @@ ssh_protection() {
             else
                 echo -e "${RED}无效的 IP 地址${NC}"
             fi
+            echo
+            echo -e "${YELLOW}按回车返回...${NC}"
+            read || true
             ;;
         3)
             return
             ;;
         *)
             echo -e "${RED}无效选择${NC}"
+            echo -e "${YELLOW}按回车返回...${NC}"
+            read || true
             ;;
     esac
 }
