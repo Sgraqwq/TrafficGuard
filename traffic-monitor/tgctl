@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.0.1"
+TG_VERSION="1.0.2"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -935,6 +935,9 @@ check_update() {
     # 比较版本
     if [ "$latest_version" = "$TG_VERSION" ]; then
         echo -e "${GREEN}✓ 已是最新版本${NC}"
+        echo
+        echo -e "${YELLOW}按回车继续...${NC}"
+        read || true
         return 0
     fi
     
@@ -948,6 +951,9 @@ check_update() {
     
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}已取消更新${NC}"
+        echo
+        echo -e "${YELLOW}按回车继续...${NC}"
+        read || true
         return 0
     fi
     
@@ -961,6 +967,9 @@ check_update() {
     if ! curl -fsSL --connect-timeout 10 --max-time 60 "${TG_REPO}/raw/main/scripts/install.sh" -o "$tmp_script" 2>/dev/null; then
         echo -e "${RED}下载安装脚本失败${NC}"
         rm -f "$tmp_script"
+        echo
+        echo -e "${YELLOW}按回车继续...${NC}"
+        read || true
         return 1
     fi
     
