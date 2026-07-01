@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.0.8"
+TG_VERSION="1.0.9"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -566,11 +566,11 @@ show_traffic() {
     # 显示结果
     if [ -s "$MERGED_FILE" ]; then
         sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
-            # 转换为 MB
-            in_mb=$((in_bytes / 1048576))
-            out_mb=$((out_bytes / 1048576))
+            # 转换为 MB（防御性默认值）
+            in_mb=$(( ${in_bytes:-0} / 1048576 ))
+            out_mb=$(( ${out_bytes:-0} / 1048576 ))
             printf "%-14s %-10s %-10s %-10s %-10s\n" "$ip" "$in_pkts" "${in_mb}MB" "$out_pkts" "${out_mb}MB"
-        done
+        done || true
     fi
     
     # 清理临时文件
