@@ -153,10 +153,17 @@ dl_chmod() {
 
 #  安装开始
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}    TrafficGuard 安装程序${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
+if [ "${TG_IS_UPDATE:-0}" -eq 1 ]; then
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    TrafficGuard 热更新程序${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+else
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    TrafficGuard 安装程序${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+fi
 
 # ── 0. 前置检查 
 info "前置环境检查..."
@@ -345,15 +352,19 @@ fi
 # 启动/重启 fail2ban
 info "启动 Fail2Ban..."
 if service_is_active fail2ban "$INIT_SYSTEM"; then
-    if service_control restart fail2ban "$INIT_SYSTEM"; then
-        info "Fail2Ban 已重启"
+    if [ "${TG_IS_UPDATE:-0}" -eq 1 ]; then
+        info "Fail2Ban 已经在运行，更新模式下跳过重启以维持防护连贯"
     else
-        warn "Fail2Ban 重启失败，尝试手动启动..."
-        service_control start fail2ban "$INIT_SYSTEM" || {
-            warn "Fail2Ban 启动失败，请手动检查:"
-            warn "  fail2ban-client -t  # 测试配置"
-            warn "  fail2ban-server     # 前台运行查看错误"
-        }
+        if service_control restart fail2ban "$INIT_SYSTEM"; then
+            info "Fail2Ban 已重启"
+        else
+            warn "Fail2Ban 重启失败，尝试手动启动..."
+            service_control start fail2ban "$INIT_SYSTEM" || {
+                warn "Fail2Ban 启动失败，请手动检查:"
+                warn "  fail2ban-client -t  # 测试配置"
+                warn "  fail2ban-server     # 前台运行查看错误"
+            }
+        fi
     fi
 else
     if service_control start fail2ban "$INIT_SYSTEM"; then
@@ -399,7 +410,6 @@ info "目录已创建"
 
 # ── 7. 定时任务 
 info "设置定时任务（每小时统计 + 开机自动恢复）"
-local new_crontab
 new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tgctl restore" || true)
 {
     echo "$new_crontab"
@@ -528,11 +538,19 @@ fi
 
 # ── 完成 
 echo ""
-info "安装完成"
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}    TrafficGuard 已安装${NC}"
-echo -e "${GREEN}========================================${NC}"
+if [ "${TG_IS_UPDATE:-0}" -eq 1 ]; then
+    info "热更新完成"
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    TrafficGuard 已成功更新${NC}"
+    echo -e "${GREEN}========================================${NC}"
+else
+    info "安装完成"
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    TrafficGuard 已安装${NC}"
+    echo -e "${GREEN}========================================${NC}"
+fi
 echo ""
 echo "Fail2Ban 配置: /etc/fail2ban/jail.d/trafficguard.conf"
 echo ""

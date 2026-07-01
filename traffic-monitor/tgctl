@@ -1154,8 +1154,9 @@ check_update() {
     echo -e "${YELLOW}发现新版本: $TG_VERSION → $latest_version${NC}"
     echo
     echo -e "${BOLD}更新内容:${NC}"
-    echo "  1) 下载最新安装脚本"
-    echo "  2) 重新安装 TrafficGuard"
+    echo "  1) 静默拉取最新代码"
+    echo "  2) 保留所有配置和防封记录"
+    echo "  3) 自动重启并返回管理台"
     echo
     read -p "是否立即更新? [y/N]: " confirm || return
     
@@ -1183,12 +1184,24 @@ check_update() {
         return 1
     fi
     
-    echo -e "${GREEN}下载完成，开始安装...${NC}"
+    echo -e "${GREEN}下载完成，正在静默应用更新...${NC}"
     echo
     
-    # 执行安装脚本
+    # 执行安装脚本 (热更新模式)
     chmod +x "$tmp_script"
-    exec sudo bash "$tmp_script"
+    if sudo TG_IS_UPDATE=1 bash "$tmp_script"; then
+        rm -f "$tmp_script"
+        echo
+        echo -e "${GREEN}更新成功！正在重新加载管理台...${NC}"
+        sleep 1
+        exec /usr/local/bin/tgctl
+    else
+        echo
+        echo -e "${RED}更新失败，请检查上方日志输出。${NC}"
+        rm -f "$tmp_script"
+        echo -e "${YELLOW}按回车继续...${NC}"
+        read -r _ </dev/tty || true
+    fi
 }
 
 # 主函数
