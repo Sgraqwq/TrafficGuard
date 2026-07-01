@@ -241,7 +241,6 @@ if [ -n "$TRAFFIC_DATA" ]; then
         
         # 原子写入状态文件
         if [ -n "$NEW_STATE" ]; then
-            local _state_tmp
             _state_tmp=$(mktemp "${DAILY_STATE_FILE}.XXXXXX" 2>/dev/null) || true
             if [ -n "$_state_tmp" ]; then
                 echo -n "$NEW_STATE" > "$_state_tmp" 2>/dev/null && mv -f "$_state_tmp" "$DAILY_STATE_FILE" 2>/dev/null || rm -f "$_state_tmp"
