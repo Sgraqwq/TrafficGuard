@@ -2,6 +2,10 @@
 # TrafficGuard 公共函数库
 # 被 install.sh 和 uninstall.sh 加载
 
+# ── 版本信息
+export TG_VERSION="1.0.0"
+export TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
+
 # ── 颜色与日志 
 export RED='\033[0;31m'
 export GREEN='\033[0;32m'
