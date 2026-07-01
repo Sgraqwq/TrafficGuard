@@ -414,18 +414,27 @@ mkdir -p /var/log/trafficguard || warn "创建 /var/log/trafficguard 失败"
 info "目录已创建"
 
 # ── 7. 定时任务 
-info "设置定时任务（每小时统计 + 开机自动恢复）"
-new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tgctl restore" || true)
+info "设置定时任务（每小时统计 + 开机自动恢复 + 每日清理旧数据）"
+new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tgctl restore" | grep -v "tg-cleanup-stats" || true)
 if {
     echo "$new_crontab"
     echo "0 * * * * /usr/local/bin/traffic-save-stats"
     echo "@reboot /usr/local/bin/tgctl restore"
+    echo "0 0 * * * find /var/lib/trafficguard/stats -name 'traffic_*.log' -mtime +90 -delete 2>/dev/null || true"
 } | crontab - 2>/dev/null; then
-    info "定时任务已设置（每小时统计 + 开机自动恢复规则）"
+    info "定时任务已设置（每小时统计 + 开机自动恢复规则 + 每日清理 90 天前旧数据）"
 else
     warn "定时任务设置失败，请手动添加:"
     warn "  0 * * * * /usr/local/bin/traffic-save-stats"
     warn "  @reboot /usr/local/bin/tgctl restore"
+fi
+
+# ── 8. 日志轮转配置 
+if [ -d /etc/logrotate.d ]; then
+    dl_chmod "scripts/trafficguard.logrotate" /etc/logrotate.d/trafficguard
+    info "日志轮转配置已安装 (/etc/logrotate.d/trafficguard)"
+else
+    warn "未找到 /etc/logrotate.d，跳过日志轮转配置"
 fi
 
 # ── 8. nftables 流量统计与纯网络层限流 (幂等创建) 

@@ -24,6 +24,19 @@ get_config_int() {
 STATS_DIR="/var/lib/trafficguard/stats"
 LOG_FILE="/var/log/trafficguard/traffic-stats.log"
 
+# 并发锁：防止多个实例同时执行导致统计文件损坏
+LOCK_FILE="/var/lock/tg-save-stats.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9 2>/dev/null; then
+    # flock 不可用时（比如 busybox）用 mkdir 实现原子锁
+    LOCK_DIR="/var/run/tg-save-stats.lock"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        echo "[$(date +%Y%m%d_%H%M%S)] 另一个实例正在运行，跳过本次执行" >> "$LOG_FILE"
+        exit 0
+    fi
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+fi
+
 # 创建目录
 mkdir -p "$STATS_DIR"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -197,9 +210,17 @@ if [ -n "$TRAFFIC_DATA" ]; then
                         echo "[$NOW] [警告] IP $ip 今日入站流量超限 ($((delta_bytes/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
                         nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
                             echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
-                        # 持久化黑名单到文件（防止重启后丢失）
-                        nft list set ip trafficguard manual_banned 2>/dev/null \
-                            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > /etc/trafficguard/manual_banned.txt 2>/dev/null || true
+                        # 原子写入持久化黑名单（防止崩溃导致文件损坏）
+                        local _banned_tmp
+                        _banned_tmp=$(mktemp "/etc/trafficguard/manual_banned.XXXXXX" 2>/dev/null) || true
+                        if [ -n "$_banned_tmp" ]; then
+                            if nft list set ip trafficguard manual_banned 2>/dev/null \
+                                    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$_banned_tmp" 2>/dev/null; then
+                                mv -f "$_banned_tmp" /etc/trafficguard/manual_banned.txt 2>/dev/null || rm -f "$_banned_tmp"
+                            else
+                                rm -f "$_banned_tmp"
+                            fi
+                        fi
                     fi
                 fi
             fi

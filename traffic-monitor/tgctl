@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.2.6"
+TG_VERSION="1.2.7"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -113,18 +113,21 @@ restore_nft_rules() {
         nft add set ip trafficguard rate_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null || true
     fi
 
-    # 添加规则（幂等：通过 @setname 唯一标识检查）
+    # 添加规则（顺序与 install.sh 保持一致：白名单 → 黑名单 → 流量统计 → 限流）
     local chain_rules
     chain_rules=$(nft list chain ip trafficguard TRAFFICGUARD 2>/dev/null || true)
 
-    echo "$chain_rules" | grep -q '@inbound_traffic' || \
-        nft add rule ip trafficguard TRAFFICGUARD 'add @inbound_traffic { ip daddr counter }' 2>/dev/null || true
-    echo "$chain_rules" | grep -q '@outbound_traffic' || \
-        nft add rule ip trafficguard TRAFFICGUARD 'add @outbound_traffic { ip saddr counter }' 2>/dev/null || true
+    # 1. 白名单放行（最高优先级）
     echo "$chain_rules" | grep -q '@whitelist' || \
         nft add rule ip trafficguard TRAFFICGUARD 'ip saddr @whitelist accept' 2>/dev/null || true
+    # 2. 手动黑名单拦截
     echo "$chain_rules" | grep -q '@manual_banned' || \
         nft add rule ip trafficguard TRAFFICGUARD 'ip saddr @manual_banned drop' 2>/dev/null || true
+    # 3. 流量统计（仅对未被白黑名单处理的流量计数）
+    echo "$chain_rules" | grep -q '@inbound_traffic' || \
+        nft add rule ip trafficguard TRAFFICGUARD 'add @inbound_traffic { ip saddr counter }' 2>/dev/null || true
+    echo "$chain_rules" | grep -q '@outbound_traffic' || \
+        nft add rule ip trafficguard TRAFFICGUARD 'add @outbound_traffic { ip daddr counter }' 2>/dev/null || true
 
     # 读取配置中的限流参数
     local conn_limit rate_limit rate_burst
@@ -132,10 +135,12 @@ restore_nft_rules() {
     rate_limit=$(get_config_int "TG_RATE_LIMIT" "$TG_CONF_FILE" "50")
     rate_burst=$(get_config_int "TG_RATE_BURST" "$TG_CONF_FILE" "100")
 
+    # 4. 并发连接数限制
     if [ "$conn_limit" -gt 0 ]; then
         echo "$chain_rules" | grep -q '@conn_limit' || \
             nft add rule ip trafficguard TRAFFICGUARD "ct state new add @conn_limit { ip saddr ct count over ${conn_limit} } drop" 2>/dev/null || true
     fi
+    # 5. 新建连接频率限制
     if [ "$rate_limit" -gt 0 ]; then
         echo "$chain_rules" | grep -q '@rate_limit' || \
             nft add rule ip trafficguard TRAFFICGUARD "ct state new update @rate_limit { ip saddr limit rate over ${rate_limit}/second burst ${rate_burst} packets } drop" 2>/dev/null || true

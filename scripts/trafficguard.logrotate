@@ -1,0 +1,26 @@
+# TrafficGuard 日志轮转配置
+# 由安装脚本自动部署到 /etc/logrotate.d/trafficguard
+
+# 运行日志（流量统计执行记录）
+/var/log/trafficguard/traffic-stats.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}
+
+# 流量统计数据文件（每日一个文件，保留 90 天）
+/var/lib/trafficguard/stats/traffic_*.log {
+    daily
+    rotate 90
+    compress
+    delaycompress
+    missingok
+    notifempty
+    # 按日期命名，不需要 dateext
+    # 超过 90 天的旧文件由 olddir 或脚本清理
+    maxage 90
+}

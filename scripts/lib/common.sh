@@ -3,7 +3,7 @@
 # 被 install.sh 和 uninstall.sh 加载
 
 # ── 版本信息
-export TG_VERSION="1.2.6"
+export TG_VERSION="1.2.7"
 export TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # ── 颜色与日志 
@@ -272,12 +272,19 @@ check_nftables_available() {
 TG_WHITELIST_FILE="/etc/trafficguard/whitelist.txt"
 TG_BANNED_FILE="/etc/trafficguard/manual_banned.txt"
 
-# 保存白名单 IP 到文件
+# 保存白名单 IP 到文件（原子写入，防止崩溃导致文件损坏）
 tg_save_whitelist() {
     mkdir -p /etc/trafficguard 2>/dev/null || true
-    if nft list set ip trafficguard whitelist >/dev/null 2>&1; then
-        nft list set ip trafficguard whitelist 2>/dev/null \
-            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$TG_WHITELIST_FILE" 2>/dev/null || true
+    if ! nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        return 0
+    fi
+    local tmp
+    tmp=$(mktemp "${TG_WHITELIST_FILE}.XXXXXX" 2>/dev/null) || return 0
+    if nft list set ip trafficguard whitelist 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$TG_WHITELIST_FILE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    else
+        rm -f "$tmp"
     fi
 }
 
@@ -296,12 +303,19 @@ tg_load_whitelist() {
     done < "$TG_WHITELIST_FILE"
 }
 
-# 保存手动黑名单 IP 到文件
+# 保存手动黑名单 IP 到文件（原子写入，防止崩溃导致文件损坏）
 tg_save_manual_banned() {
     mkdir -p /etc/trafficguard 2>/dev/null || true
-    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
-        nft list set ip trafficguard manual_banned 2>/dev/null \
-            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$TG_BANNED_FILE" 2>/dev/null || true
+    if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        return 0
+    fi
+    local tmp
+    tmp=$(mktemp "${TG_BANNED_FILE}.XXXXXX" 2>/dev/null) || return 0
+    if nft list set ip trafficguard manual_banned 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$TG_BANNED_FILE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    else
+        rm -f "$tmp"
     fi
 }
 
