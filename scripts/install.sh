@@ -200,23 +200,10 @@ echo ""
 # ── 2. 收集配置参数 
 info "配置参数..."
 SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
-if [ -t 0 ] || [ -c /dev/tty ]; then
-    echo ""
-    # 尝试从 /dev/tty 读取，兼容 curl | bash 的情况
-    read -t 15 -p "请输入需要防护的 SSH 端口 [默认 22]: " input_port < /dev/tty || true
-    if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
-        SSH_PORT="$input_port"
-    fi
-fi
-if [ "$SSH_PORT" = "ssh" ] || [ "$SSH_PORT" = "22" ]; then
-    info "SSH 防护端口: 22 (默认)"
-    SSH_PORT="ssh"
-else
-    info "SSH 防护端口: $SSH_PORT"
-fi
+info "SSH 防护端口: 22 (默认) - 如需修改请在安装后编辑 /etc/fail2ban/jail.d/trafficguard.conf"
 echo ""
 
-# 自动提取当前管理员 IP 并提示加白
+# 自动提取当前管理员 IP
 ADMIN_IP=""
 if [ -n "${SSH_CLIENT:-}" ]; then
     ADMIN_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
@@ -224,19 +211,16 @@ elif [ -n "${SSH_CONNECTION:-}" ]; then
     ADMIN_IP=$(echo "$SSH_CONNECTION" | awk '{print $1}')
 fi
 
-ADD_WHITELIST="y"
-if [ -n "$ADMIN_IP" ] && { [ -t 0 ] || [ -c /dev/tty ]; }; then
-    read -t 15 -p "检测到您当前的 SSH 登录 IP 为 $ADMIN_IP，是否将其加入全局白名单？ [Y/n]: " wl_choice < /dev/tty || true
-    if [[ "$wl_choice" =~ ^[Nn]$ ]]; then
-        ADD_WHITELIST="n"
-    fi
+# sudo 模式下尝试通过 who 获取真实 IP
+if [ -z "$ADMIN_IP" ]; then
+    ADMIN_IP=$(who -m 2>/dev/null | awk '{print $NF}' | tr -d '()' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
 fi
 
-if [ "$ADD_WHITELIST" = "y" ] && [ -n "$ADMIN_IP" ]; then
-    info "已将您的当前 IP ($ADMIN_IP) 设定为初始白名单"
+ADD_WHITELIST="y"
+if [ -n "$ADMIN_IP" ]; then
+    info "已将您的当前 IP ($ADMIN_IP) 设定为初始全局白名单"
 else
-    ADMIN_IP=""
-    info "未添加初始白名单"
+    info "未检测到 SSH 登录 IP，跳过初始白名单"
 fi
 echo ""
 
@@ -502,12 +486,3 @@ echo "  tgctl unban <IP>         # 手动解封"
 echo "  tgctl ssh                # SSH 防护"
 echo "  tgctl config             # 配置管理"
 echo ""
-
-# 如果在交互式终端中，安装完成后自动启动管理台
-if [ -t 0 ] || [ -c /dev/tty ]; then
-    if command -v tgctl >/dev/null 2>&1; then
-        exec tgctl < /dev/tty
-    else
-        exec /usr/local/bin/tgctl < /dev/tty
-    fi
-fi
