@@ -14,12 +14,12 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 # ── 临时文件追踪 
-TEMP_FILES=""
+TEMP_FILES=()
 
 # 清理临时文件，脚本退出时自动调用
 cleanup_temp() {
     local exit_code=$?
-    for f in $TEMP_FILES; do
+    for f in "${TEMP_FILES[@]}"; do
         rm -f "$f" 2>/dev/null || true
     done
     if [ $exit_code -ne 0 ] && [ $exit_code -ne 130 ] && [ $exit_code -ne 143 ]; then
@@ -38,13 +38,28 @@ write_file_atomic() {
 
     mkdir -p "$tmp_dir" || { error "创建目录失败: $tmp_dir"; }
     tmp=$(mktemp "${tmp_dir}/.tmp.XXXXXX") || error "创建临时文件失败"
-    TEMP_FILES="$TEMP_FILES $tmp"
+    TEMP_FILES+=("$tmp")
 
     cat > "$tmp" || { error "写入临时文件失败: $dst"; }
     mv "$tmp" "$dst" || { error "移动文件失败: $dst"; }
+}
 
-    # 已成功移至目标路径，从追踪列表移除
-    TEMP_FILES="${TEMP_FILES// "$tmp"/}"
+# ── 安全配置读取 
+# 用于替代 source 读取配置文件，杜绝命令执行注入
+get_config_int() {
+    local key="$1"
+    local file="$2"
+    local default_val="${3:-0}"
+    if [ -f "$file" ]; then
+        local val
+        # 提取行，取等号后内容，仅保留首个连续数字部分
+        val=$(grep -E "^${key}=" "$file" | head -n1 | cut -d= -f2- | grep -oE '[0-9]+' | head -n1)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$default_val"
 }
 
 # ── 初始化系统检测 

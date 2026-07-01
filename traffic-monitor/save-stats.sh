@@ -4,6 +4,22 @@
 
 set -euo pipefail
 
+# 安全配置读取
+get_config_int() {
+    local key="$1"
+    local file="$2"
+    local default_val="${3:-0}"
+    if [ -f "$file" ]; then
+        local val
+        val=$(grep -E "^${key}=" "$file" 2>/dev/null | head -n1 | cut -d= -f2- | grep -oE '[0-9]+' | head -n1)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$default_val"
+}
+
 # 配置
 STATS_DIR="/var/lib/trafficguard/stats"
 LOG_FILE="/var/log/trafficguard/traffic-stats.log"
@@ -58,12 +74,8 @@ if [ -n "$TRAFFIC_DATA" ]; then
     
     # ── 大流量自动查杀 ──
     TG_CONF="/etc/trafficguard/trafficguard.conf"
-    if [ -f "$TG_CONF" ]; then
-        # shellcheck source=/dev/null
-        source "$TG_CONF"
-    fi
+    LIMIT_MB=$(get_config_int "TG_DAILY_TRAFFIC_LIMIT_MB" "$TG_CONF" "0")
     
-    LIMIT_MB="${TG_DAILY_TRAFFIC_LIMIT_MB:-0}"
     if [ "$LIMIT_MB" -gt 0 ]; then
         LIMIT_BYTES=$(( LIMIT_MB * 1024 * 1024 ))
         
@@ -87,7 +99,7 @@ if [ -n "$TRAFFIC_DATA" ]; then
                 if [ "$is_whitelisted" -eq 0 ]; then
                     # 检查是否已经被封禁
                     is_banned=0
-                    if nft list set ip trafficguard manual_banned 2>/dev/null | grep -q "$ip"; then
+                    if nft list set ip trafficguard manual_banned 2>/dev/null | grep -qE "(^|[^0-9.])${ip//./\\.}([^0-9.]|$)"; then
                         is_banned=1
                     fi
                     
@@ -102,13 +114,13 @@ if [ -n "$TRAFFIC_DATA" ]; then
     fi
     # ───────────────
 
-    # 原子追加：先写临时文件，再追加到统计文件
-    TMPFILE=$(mktemp "$STATS_DIR/.tmp.XXXXXX")
-    echo "# $NOW" > "$TMPFILE"
-    echo "$TRAFFIC_DATA" >> "$TMPFILE"
-    echo "" >> "$TMPFILE"
-    cat "$TMPFILE" >> "$STATS_FILE"
-    rm -f "$TMPFILE"
+    # 直接追加到统计文件
+    {
+        echo "# $NOW"
+        echo "$TRAFFIC_DATA"
+        echo ""
+    } >> "$STATS_FILE"
+    
     echo "[$NOW] 已保存流量统计到 $STATS_FILE" >> "$LOG_FILE"
 else
     echo "[$NOW] 没有流量数据" >> "$LOG_FILE"

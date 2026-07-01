@@ -4,6 +4,22 @@
 
 set -euo pipefail
 
+# 安全配置读取
+get_config_int() {
+    local key="$1"
+    local file="$2"
+    local default_val="${3:-0}"
+    if [ -f "$file" ]; then
+        local val
+        val=$(grep -E "^${key}=" "$file" 2>/dev/null | head -n1 | cut -d= -f2- | grep -oE '[0-9]+' | head -n1)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$default_val"
+}
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -647,15 +663,20 @@ config_management() {
             echo -e "${BOLD}正在平滑重载防火墙规则...${NC}"
             local tg_conf="/etc/trafficguard/trafficguard.conf"
             if [ -f "$tg_conf" ]; then
-                # shellcheck source=/dev/null
-                source "$tg_conf"
+                # 安全解析配置
+                local TG_CONN_LIMIT
+                TG_CONN_LIMIT=$(get_config_int "TG_CONN_LIMIT" "$tg_conf" "0")
+                local TG_RATE_LIMIT
+                TG_RATE_LIMIT=$(get_config_int "TG_RATE_LIMIT" "$tg_conf" "0")
+                local TG_RATE_BURST
+                TG_RATE_BURST=$(get_config_int "TG_RATE_BURST" "$tg_conf" "100")
                 
                 # 更新并发限制
                 for handle in $(nft -a list chain ip trafficguard TRAFFICGUARD 2>/dev/null | grep 'ct count over' | awk '{print $NF}'); do
                     nft delete rule ip trafficguard TRAFFICGUARD handle "$handle" 2>/dev/null || true
                 done
                 
-                if [ "${TG_CONN_LIMIT:-0}" -gt 0 ]; then
+                if [ "$TG_CONN_LIMIT" -gt 0 ]; then
                     nft add rule ip trafficguard TRAFFICGUARD ct state new add @conn_limit { ip saddr ct count over ${TG_CONN_LIMIT} } drop 2>/dev/null || echo -e "${RED}更新并发限制失败${NC}"
                 fi
                 
@@ -664,8 +685,8 @@ config_management() {
                     nft delete rule ip trafficguard TRAFFICGUARD handle "$handle" 2>/dev/null || true
                 done
                 
-                if [ "${TG_RATE_LIMIT:-0}" -gt 0 ]; then
-                    nft add rule ip trafficguard TRAFFICGUARD ct state new update @rate_limit { ip saddr limit rate over ${TG_RATE_LIMIT}/second burst ${TG_RATE_BURST:-100} packets } drop 2>/dev/null || echo -e "${RED}更新频率限制失败${NC}"
+                if [ "$TG_RATE_LIMIT" -gt 0 ]; then
+                    nft add rule ip trafficguard TRAFFICGUARD ct state new update @rate_limit { ip saddr limit rate over ${TG_RATE_LIMIT}/second burst ${TG_RATE_BURST} packets } drop 2>/dev/null || echo -e "${RED}更新频率限制失败${NC}"
                 fi
                 
                 echo -e "${GREEN}底层防火墙限流规则重载完成！无任何现存连接断开。${NC}"

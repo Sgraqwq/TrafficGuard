@@ -279,8 +279,9 @@ else
 fi
 
 # 加载配置变量以便后续使用
-# shellcheck source=/dev/null
-source "$TG_CONF_FILE"
+TG_CONN_LIMIT=$(get_config_int "TG_CONN_LIMIT" "$TG_CONF_FILE" "100")
+TG_RATE_LIMIT=$(get_config_int "TG_RATE_LIMIT" "$TG_CONF_FILE" "50")
+TG_RATE_BURST=$(get_config_int "TG_RATE_BURST" "$TG_CONF_FILE" "100")
 echo ""
 
 # ── 3. Fail2Ban 配置 

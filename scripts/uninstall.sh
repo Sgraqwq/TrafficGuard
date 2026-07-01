@@ -78,8 +78,9 @@ else
     service fail2ban start >/dev/null 2>&1 || true
 fi
 
-# 5. 清理数据和日志
-info "[-] 删除数据和日志目录..."
+# 5. 清理配置、数据和日志
+info "[-] 删除配置、数据和日志目录..."
+rm -rf /etc/trafficguard
 rm -rf /var/lib/trafficguard
 rm -rf /var/log/trafficguard
 
