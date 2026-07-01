@@ -160,25 +160,29 @@ show_realtime() {
     echo "$OUTBOUND" > "$OUTBOUND_FILE" 2>/dev/null || true
     
     # 合并数据
-    while read -r ip in_pkts in_bytes; do
-        out_pkts=0
-        out_bytes=0
-        if [ -n "$ip" ]; then
-            out_line=$(grep "^$ip " "$OUTBOUND_FILE" 2>/dev/null || true)
-            if [ -n "$out_line" ]; then
-                out_pkts=$(echo "$out_line" | awk '{print $2}')
-                out_bytes=$(echo "$out_line" | awk '{print $3}')
+    if [ -s "$INBOUND_FILE" ]; then
+        while read -r ip in_pkts in_bytes; do
+            out_pkts=0
+            out_bytes=0
+            if [ -n "$ip" ]; then
+                out_line=$(grep "^$ip " "$OUTBOUND_FILE" 2>/dev/null || true)
+                if [ -n "$out_line" ]; then
+                    out_pkts=$(echo "$out_line" | awk '{print $2}')
+                    out_bytes=$(echo "$out_line" | awk '{print $3}')
+                fi
+                echo "$ip $in_pkts $in_bytes ${out_pkts:-0} ${out_bytes:-0}"
             fi
-            echo "$ip $in_pkts $in_bytes ${out_pkts:-0} ${out_bytes:-0}"
-        fi
-    done < "$INBOUND_FILE" > "$MERGED_FILE" 2>/dev/null || true
+        done < "$INBOUND_FILE" > "$MERGED_FILE" 2>/dev/null || true
+    fi
     
     # 添加仅在出站中出现的 IP
-    while read -r ip out_pkts out_bytes; do
-        if [ -n "$ip" ] && ! grep -q "^$ip " "$MERGED_FILE" 2>/dev/null; then
-            echo "$ip 0 0 $out_pkts $out_bytes"
-        fi
-    done < "$OUTBOUND_FILE" >> "$MERGED_FILE" 2>/dev/null || true
+    if [ -s "$OUTBOUND_FILE" ]; then
+        while read -r ip out_pkts out_bytes; do
+            if [ -n "$ip" ] && ! grep -q "^$ip " "$MERGED_FILE" 2>/dev/null; then
+                echo "$ip 0 0 $out_pkts $out_bytes"
+            fi
+        done < "$OUTBOUND_FILE" >> "$MERGED_FILE" 2>/dev/null || true
+    fi
     
     # 显示结果
     if [ -s "$MERGED_FILE" ]; then
