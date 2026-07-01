@@ -204,7 +204,7 @@ if [ -t 0 ] || [ -c /dev/tty ]; then
     echo ""
     input_port=""
     echo -n "请输入需要防护的 SSH 端口 [默认 22]: "
-    read -t 15 input_port < /dev/tty || true
+    read input_port < /dev/tty || true
     if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
         SSH_PORT="$input_port"
     fi
@@ -500,3 +500,12 @@ echo "  tgctl unban <IP>         # 手动解封"
 echo "  tgctl ssh                # SSH 防护"
 echo "  tgctl config             # 配置管理"
 echo ""
+
+# 如果在交互式终端中，安装完成后自动启动管理台
+if [ -t 0 ] || [ -c /dev/tty ]; then
+    if command -v tgctl >/dev/null 2>&1; then
+        exec tgctl < /dev/tty
+    else
+        exec /usr/local/bin/tgctl < /dev/tty
+    fi
+fi
