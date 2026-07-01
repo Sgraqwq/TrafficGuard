@@ -160,45 +160,48 @@ if [ -n "$TRAFFIC_DATA" ]; then
             WHITELIST=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
         fi
         
-        # 取今日基线：每个 IP 在今天日志中的第一条记录（最小值 in_bytes）
-        # 用"当前计数器值 - 基线值"算今日累计流量，而非小时增量
-        BASELINE=""
-        if [ -f "$STATS_FILE" ]; then
-            BASELINE=$(awk '/^[0-9]/{
-                if (!($1 in min_bytes) || $3 < min_bytes[$1]) {
-                    min_bytes[$1] = $3
-                }
-            } END {
-                for (ip in min_bytes) printf "%s %s\n", ip, min_bytes[ip]
-            }' "$STATS_FILE" 2>/dev/null || true)
+        # ── 基于状态文件的每日累计查杀 ──
+        # 状态文件独立于日志文件，追踪"今日累计值"和"上次原始计数器值"
+        # nftables 计数器重置不影响累计（因为累计和 raw 分开存储）
+        DAILY_STATE_FILE="/var/lib/trafficguard/daily_usage.db"
+        declare -A _ST_CUM _ST_RAW _ST_DATE
+        if [ -f "$DAILY_STATE_FILE" ]; then
+            while IFS='|' read -r _ip _date _cum _raw; do
+                [ -n "$_ip" ] && _ST_CUM["$_ip"]=$_cum && _ST_RAW["$_ip"]=$_raw && _ST_DATE["$_ip"]=$_date
+            done < "$DAILY_STATE_FILE"
         fi
         
+        # 处理完所有 IP 后统一写回状态
+        NEW_STATE=""
         while read -r ip in_pkts in_bytes out_pkts out_bytes; do
             # 验证 in_bytes 是整数
             if [ -z "$in_bytes" ] || ! [[ "$in_bytes" =~ ^[0-9]+$ ]]; then
                 continue
             fi
             
-            # 计算今日累计流量 = 当前值 - 今日基线
-            baseline_bytes=0
-            if [ -n "$BASELINE" ]; then
-                base_line=$(echo "$BASELINE" | grep -F "$ip " | head -1 || true)
-                if [ -n "$base_line" ]; then
-                    baseline_bytes=$(echo "$base_line" | awk '{print $2}')
-                    [[ "$baseline_bytes" =~ ^[0-9]+$ ]] || baseline_bytes=0
-                fi
+            # 读取该 IP 的追踪状态
+            last_raw="${_ST_RAW["$ip"]:-0}"
+            cumulative="${_ST_CUM["$ip"]:-0}"
+            state_date="${_ST_DATE["$ip"]:-}"
+            
+            # 跨天重置累计值（保留 last_raw 保持增量连续）
+            if [ -n "$state_date" ] && [ "$state_date" != "$TODAY" ]; then
+                cumulative=0
             fi
             
-            if [ "$baseline_bytes" -gt 0 ]; then
-                # 已有基线：今日累计 = 当前值 - 基线
-                daily_total=$(( in_bytes - baseline_bytes ))
-                [ "$daily_total" -lt 0 ] && daily_total="$in_bytes"
+            # 计算增量 = 当前 raw - 上次 raw
+            if [ "$last_raw" -gt 0 ]; then
+                delta=$(( in_bytes - last_raw ))
+                # counter 重置（重启/nft reset counters）：差值可能为负，取当前值为增量
+                [ "$delta" -lt 0 ] && delta="$in_bytes"
             else
-                # 今日首次运行，无基线 → 跳过检查，日志保存后下次就有基线了
-                daily_total=0
+                # 首次出现，仅建立追踪记录，不产生增量
+                delta=0
             fi
             
-            if [ "$daily_total" -gt "$LIMIT_BYTES" ]; then
+            cumulative=$(( cumulative + delta ))
+            
+            if [ "$cumulative" -gt "$LIMIT_BYTES" ]; then
                 # 检查是否在白名单中（精确匹配）
                 is_whitelisted=0
                 for w_ip in $WHITELIST; do
@@ -216,7 +219,7 @@ if [ -n "$TRAFFIC_DATA" ]; then
                     fi
                     
                     if [ "$is_banned" -eq 0 ]; then
-                        echo "[$NOW] [警告] IP $ip 今日入站流量超限 ($((daily_total/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
+                        echo "[$NOW] [警告] IP $ip 今日入站流量超限 ($((cumulative/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
                         nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
                             echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
                         # 原子写入持久化黑名单（防止崩溃导致文件损坏）
@@ -232,7 +235,18 @@ if [ -n "$TRAFFIC_DATA" ]; then
                     fi
                 fi
             fi
+            # 累积状态行（记入今日累计和当前原始值）
+            NEW_STATE="${NEW_STATE}${ip}|${TODAY}|${cumulative}|${in_bytes}"$'\n'
         done <<< "$TRAFFIC_DATA"
+        
+        # 原子写入状态文件
+        if [ -n "$NEW_STATE" ]; then
+            local _state_tmp
+            _state_tmp=$(mktemp "${DAILY_STATE_FILE}.XXXXXX" 2>/dev/null) || true
+            if [ -n "$_state_tmp" ]; then
+                echo -n "$NEW_STATE" > "$_state_tmp" 2>/dev/null && mv -f "$_state_tmp" "$DAILY_STATE_FILE" 2>/dev/null || rm -f "$_state_tmp"
+            fi
+        fi
     fi
     # ───────────────
 
