@@ -203,7 +203,7 @@ SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
 if [ -t 0 ] || [ -c /dev/tty ]; then
     echo ""
     # 尝试从 /dev/tty 读取，兼容 curl | bash 的情况
-    read -t 15 -p "请输入需要防护的 SSH 端口 [默认 22，直接回车跳过]: " input_port < /dev/tty || true
+    read -t 15 -p "请输入需要防护的 SSH 端口 [默认 22]: " input_port < /dev/tty || true
     if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
         SSH_PORT="$input_port"
     fi
@@ -214,6 +214,73 @@ if [ "$SSH_PORT" = "ssh" ] || [ "$SSH_PORT" = "22" ]; then
 else
     info "SSH 防护端口: $SSH_PORT"
 fi
+echo ""
+
+# 自动提取当前管理员 IP 并提示加白
+ADMIN_IP=""
+if [ -n "${SSH_CLIENT:-}" ]; then
+    ADMIN_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
+elif [ -n "${SSH_CONNECTION:-}" ]; then
+    ADMIN_IP=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+fi
+
+ADD_WHITELIST="y"
+if [ -n "$ADMIN_IP" ] && { [ -t 0 ] || [ -c /dev/tty ]; }; then
+    read -t 15 -p "检测到您当前的 SSH 登录 IP 为 $ADMIN_IP，是否将其加入全局白名单？ [Y/n]: " wl_choice < /dev/tty || true
+    if [[ "$wl_choice" =~ ^[Nn]$ ]]; then
+        ADD_WHITELIST="n"
+    fi
+fi
+
+if [ "$ADD_WHITELIST" = "y" ] && [ -n "$ADMIN_IP" ]; then
+    info "已将您的当前 IP ($ADMIN_IP) 设定为初始白名单"
+else
+    ADMIN_IP=""
+    info "未添加初始白名单"
+fi
+echo ""
+
+# ── 3. 生成防火墙配置文件 
+info "生成 TrafficGuard 核心配置文件..."
+TG_CONF_DIR="/etc/trafficguard"
+TG_CONF_FILE="$TG_CONF_DIR/trafficguard.conf"
+mkdir -p "$TG_CONF_DIR"
+
+if [ ! -f "$TG_CONF_FILE" ]; then
+    write_file_atomic "$TG_CONF_FILE" <<'EOF_CONF'
+# =========================================================
+# TrafficGuard 防火墙与流量监控核心配置
+# =========================================================
+
+# 【单IP每日流量上限 (单位: MB)】
+# 防御类型: 防止代理节点被白嫖偷跑流量、恶意刷流
+# 运作机制: 后台监控程序会定期计算单 IP 累计流量，一旦超限，将自动把该 IP 永久打入内核黑名单。
+# 设置为 0 表示不限制流量。建议值: 个人独享代理(10000 即 10GB)、共享节点(2000 即 2GB)
+TG_DAILY_TRAFFIC_LIMIT_MB=0
+
+# 【单IP最大并发连接数限制】
+# 防御类型: 慢速连接耗尽攻击、恶意多线程下载
+# 运作机制: 瞬时超过此连接数的包将被内核静默丢弃。
+# 建议值: 代理服务器(50~200)、Web服务器(100~300)
+TG_CONN_LIMIT=100
+
+# 【单IP新建连接频率限制】
+# 防御类型: CC攻击、高频端口扫描
+# 运作机制: 纯新建连接 (State New) 每秒超过设定值后进行丢包。
+TG_RATE_LIMIT=50
+
+# 【单IP频率限制的容忍度 (Burst)】
+# 解释: 允许瞬间爆发的新连接数。
+TG_RATE_BURST=100
+EOF_CONF
+    info "配置文件已生成: $TG_CONF_FILE"
+else
+    info "检测到现有的配置文件，保留原配置"
+fi
+
+# 加载配置变量以便后续使用
+# shellcheck source=/dev/null
+source "$TG_CONF_FILE"
 echo ""
 
 # ── 3. Fail2Ban 配置 
@@ -360,7 +427,21 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             warn "添加 nftables 流量统计规则失败"
     fi
 
-    # === 2. 手动黑名单集合 ===
+    # === 2. 白名单集合 ===
+    if ! nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        nft add set ip trafficguard whitelist '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
+            warn "创建 nftables 白名单 set 失败"
+    fi
+    # 自动加入管理员 IP
+    if [ "$ADD_WHITELIST" = "y" ] && [ -n "$ADMIN_IP" ]; then
+        nft add element ip trafficguard whitelist { "$ADMIN_IP" } 2>/dev/null || warn "添加管理员 IP 到白名单失败"
+    fi
+    RULE_WHITELIST="ip saddr @whitelist accept"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_WHITELIST"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_WHITELIST" 2>/dev/null || warn "添加白名单放行规则失败"
+    fi
+
+    # === 3. 手动黑名单集合 ===
     if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
         nft add set ip trafficguard manual_banned '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
             warn "创建 nftables 手动黑名单 set 失败"
@@ -370,24 +451,28 @@ if [ "$FW_BACKEND" = "nftables" ]; then
         nft add rule ip trafficguard TRAFFICGUARD "$RULE_MANUAL" 2>/dev/null || warn "添加手动黑名单规则失败"
     fi
 
-    # === 3. 并发连接数限制 ===
-    # 单 IP 超出 100 个 TCP 状态，直接丢弃新连接 (类似 limit_conn)
+    # === 4. 并发连接数限制 ===
+    # 单 IP 超出指定个 TCP 状态，直接丢弃新连接 (类似 limit_conn)
     if ! nft list set ip trafficguard conn_limit >/dev/null 2>&1; then
         nft add set ip trafficguard conn_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null
     fi
-    RULE_CONN="ct state new add @conn_limit { ip saddr ct count over 100 } drop"
-    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_CONN"; then
-        nft add rule ip trafficguard TRAFFICGUARD "$RULE_CONN" 2>/dev/null || warn "添加并发限制规则失败"
+    if [ "${TG_CONN_LIMIT:-0}" -gt 0 ]; then
+        RULE_CONN="ct state new add @conn_limit { ip saddr ct count over ${TG_CONN_LIMIT} } drop"
+        if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_CONN"; then
+            nft add rule ip trafficguard TRAFFICGUARD "$RULE_CONN" 2>/dev/null || warn "添加并发限制规则失败"
+        fi
     fi
 
-    # === 4. 新建连接频率限制 ===
-    # 单 IP 发起新连接超过 50/秒 (burst 100)，直接丢弃 (类似 limit_req)
+    # === 5. 新建连接频率限制 ===
+    # 单 IP 发起新连接超过速率，直接丢弃 (类似 limit_req)
     if ! nft list set ip trafficguard rate_limit >/dev/null 2>&1; then
         nft add set ip trafficguard rate_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null
     fi
-    RULE_RATE="ct state new update @rate_limit { ip saddr limit rate over 50/second burst 100 packets } drop"
-    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_RATE"; then
-        nft add rule ip trafficguard TRAFFICGUARD "$RULE_RATE" 2>/dev/null || warn "添加频率限制规则失败"
+    if [ "${TG_RATE_LIMIT:-0}" -gt 0 ]; then
+        RULE_RATE="ct state new update @rate_limit { ip saddr limit rate over ${TG_RATE_LIMIT}/second burst ${TG_RATE_BURST:-100} packets } drop"
+        if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_RATE"; then
+            nft add rule ip trafficguard TRAFFICGUARD "$RULE_RATE" 2>/dev/null || warn "添加频率限制规则失败"
+        fi
     fi
 
     info "nftables 底层防护墙与统计规则配置完毕"

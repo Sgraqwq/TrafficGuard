@@ -78,26 +78,87 @@ show_menu() {
     echo -e "  ${GREEN}7)${NC} SSH 防护"
     echo -e "  ${GREEN}8)${NC} 配置管理"
     echo -e "  ${GREEN}9)${NC} 服务管理"
-    echo -e "  ${GREEN}10)${NC} 卸载 TrafficGuard"
+    echo -e "  ${GREEN}10)${NC} 白名单管理"
+    echo -e "  ${GREEN}11)${NC} 卸载 TrafficGuard"
     echo -e "  ${GREEN}0)${NC} 退出"
     echo
 }
 
-# 10. 完全卸载
+# 10. 白名单管理
+whitelist_management() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}    全局白名单管理${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    
+    echo -e "${BOLD}当前白名单列表:${NC}"
+    if nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+        local wlist=$(nft list set ip trafficguard whitelist | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | xargs)
+        if [ -n "$wlist" ]; then
+            echo "  IP: $wlist"
+        else
+            echo "  (空)"
+        fi
+    else
+        echo -e "  ${YELLOW}(白名单功能未初始化)${NC}"
+    fi
+    echo
+    
+    echo -e "${BOLD}操作:${NC}"
+    echo "  1) 添加 IP 到白名单"
+    echo "  2) 从白名单移除 IP"
+    echo "  3) 返回主菜单"
+    echo
+    read -p "请选择 [1-3]: " choice || return
+    
+    case $choice in
+        1)
+            echo
+            read -p "请输入要加白的 IP 地址: " ip || return
+            if [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then
+                if nft add element ip trafficguard whitelist "{ $ip }" 2>/dev/null; then
+                    echo -e "${GREEN}已将 $ip 加入全局白名单${NC}"
+                else
+                    echo -e "${RED}添加失败，请检查防火墙状态${NC}"
+                fi
+            else
+                echo -e "${RED}无效的 IP 格式${NC}"
+            fi
+            ;;
+        2)
+            echo
+            read -p "请输入要移除的 IP 地址: " ip || return
+            if [[ "$ip" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then
+                if nft delete element ip trafficguard whitelist "{ $ip }" 2>/dev/null; then
+                    echo -e "${GREEN}已将 $ip 从白名单中移除${NC}"
+                else
+                    echo -e "${RED}移除失败，该 IP 可能不在白名单中${NC}"
+                fi
+            else
+                echo -e "${RED}无效的 IP 格式${NC}"
+            fi
+            ;;
+        3)
+            return
+            ;;
+    esac
+}
+
+# 11. 完全卸载
 uninstall_trafficguard() {
     echo -e "${RED}========================================${NC}"
-    echo -e "${RED}    警告: 纯净卸载 TrafficGuard${NC}"
+    echo -e "${RED}    警告: 卸载 TrafficGuard${NC}"
     echo -e "${RED}========================================${NC}"
     echo -e "${YELLOW}此操作将完全卸载 TrafficGuard，并删除所有数据（不留备份）。${NC}"
     echo -e "${YELLOW}包含所有的历史流量日志、已被封禁的 IP 名单等，都会被永久销毁。${NC}"
     echo
-    read -p "您确定要执行纯净卸载吗？[y/N]: " confirm
+    read -p "您确定要卸载吗？[y/N]: " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${GREEN}已取消卸载操作。${NC}"
         return
     fi
     echo
-    echo -e "${CYAN}开始纯净卸载...${NC}"
+    echo -e "${CYAN}开始卸载...${NC}"
     
     # 1. 停止定时任务
     echo -e "[-] 清理定时任务..."
@@ -525,17 +586,20 @@ config_management() {
     echo
     
     echo -e "${BOLD}配置文件:${NC}"
-    echo -e "${BOLD}配置文件:${NC}"
-    echo "  1) Fail2Ban 配置: /etc/fail2ban/jail.d/trafficguard.conf"
+    echo "  [Fail2Ban 防护] /etc/fail2ban/jail.d/trafficguard.conf"
+    echo "  [内核限流防护]  /etc/trafficguard/trafficguard.conf"
     echo
     
     echo -e "${BOLD}操作:${NC}"
     echo "  1) 查看 Fail2Ban 配置"
     echo "  2) 编辑 Fail2Ban 配置"
-    echo "  3) 重载配置"
-    echo "  4) 返回主菜单"
+    echo "  3) 重载 Fail2Ban"
+    echo "  4) 查看 防火墙内核限流配置"
+    echo "  5) 编辑 防火墙内核限流配置"
+    echo "  6) 重载 防火墙内核规则 (无缝生效)"
+    echo "  7) 返回主菜单"
     echo
-    read -p "请选择 [1-4]: " choice || return
+    read -p "请选择 [1-7]: " choice || return
     
     case $choice in
         1)
@@ -558,10 +622,52 @@ config_management() {
             echo
             echo -e "${BOLD}重载配置...${NC}"
             systemctl reload fail2ban
-            echo -e "${GREEN}配置已重载${NC}"
+            echo -e "${GREEN}Fail2Ban 配置已重载${NC}"
             echo
             ;;
         4)
+            echo
+            echo -e "${BOLD}内核限流配置:${NC}"
+            cat /etc/trafficguard/trafficguard.conf 2>/dev/null || echo "配置不存在"
+            echo
+            ;;
+        5)
+            echo
+            if command -v nano >/dev/null 2>&1; then
+                nano /etc/trafficguard/trafficguard.conf
+            elif command -v vi >/dev/null 2>&1; then
+                vi /etc/trafficguard/trafficguard.conf
+            else
+                echo -e "${RED}未找到编辑器 (nano/vi)${NC}"
+            fi
+            ;;
+        6)
+            echo
+            echo -e "${BOLD}正在平滑重载防火墙规则...${NC}"
+            local tg_conf="/etc/trafficguard/trafficguard.conf"
+            if [ -f "$tg_conf" ]; then
+                # shellcheck source=/dev/null
+                source "$tg_conf"
+                
+                # 更新并发限制
+                if [ "${TG_CONN_LIMIT:-0}" -gt 0 ]; then
+                    nft delete rule ip trafficguard TRAFFICGUARD handle $(nft -a list chain ip trafficguard TRAFFICGUARD | grep 'ct count over' | awk '{print $NF}') 2>/dev/null || true
+                    nft add rule ip trafficguard TRAFFICGUARD ct state new add @conn_limit { ip saddr ct count over ${TG_CONN_LIMIT} } drop 2>/dev/null || echo -e "${RED}更新并发限制失败${NC}"
+                fi
+                
+                # 更新频率限制
+                if [ "${TG_RATE_LIMIT:-0}" -gt 0 ]; then
+                    nft delete rule ip trafficguard TRAFFICGUARD handle $(nft -a list chain ip trafficguard TRAFFICGUARD | grep 'limit rate over' | awk '{print $NF}') 2>/dev/null || true
+                    nft add rule ip trafficguard TRAFFICGUARD ct state new update @rate_limit { ip saddr limit rate over ${TG_RATE_LIMIT}/second burst ${TG_RATE_BURST:-100} packets } drop 2>/dev/null || echo -e "${RED}更新频率限制失败${NC}"
+                fi
+                
+                echo -e "${GREEN}底层防火墙限流规则重载完成！无任何现存连接断开。${NC}"
+            else
+                echo -e "${RED}配置文件 /etc/trafficguard/trafficguard.conf 不存在！${NC}"
+            fi
+            echo
+            ;;
+        7)
             return
             ;;
     esac
@@ -702,7 +808,7 @@ main() {
         show_logo
         show_menu
         
-        read -p "请选择 [0-9] 或 10: " choice || { echo; echo -e "${GREEN}再见！${NC}"; exit 0; }
+        read -p "请选择 [0-11]: " choice || { echo; echo -e "${GREEN}再见！${NC}"; exit 0; }
         
         case $choice in
             1) show_status ;;
@@ -714,7 +820,8 @@ main() {
             7) ssh_protection ;;
             8) config_management ;;
             9) service_management ;;
-            10) uninstall_trafficguard ;;
+            10) whitelist_management ;;
+            11) uninstall_trafficguard ;;
             0)
                 echo -e "${GREEN}再见！${NC}"
                 exit 0

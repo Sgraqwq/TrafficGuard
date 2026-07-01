@@ -50,11 +50,58 @@ TRAFFIC_DATA=$(nft list set ip trafficguard per_ip_traffic 2>/dev/null | \
 
 # 验证数据格式
 if [ -n "$TRAFFIC_DATA" ]; then
-    # 检查每行是否包含 IP、packets、bytes 三个字段（在 if 条件中避免 set -e 误杀）
+    # 检查每行是否包含 IP、packets、bytes 三个字段
     if ! echo "$TRAFFIC_DATA" | awk 'NF < 3 {exit 1}'; then
         echo "[$NOW] 错误: 流量数据格式异常，跳过保存" >> "$LOG_FILE"
         exit 1
     fi
+    
+    # ── 大流量自动查杀 ──
+    TG_CONF="/etc/trafficguard/trafficguard.conf"
+    if [ -f "$TG_CONF" ]; then
+        # shellcheck source=/dev/null
+        source "$TG_CONF"
+    fi
+    
+    LIMIT_MB="${TG_DAILY_TRAFFIC_LIMIT_MB:-0}"
+    if [ "$LIMIT_MB" -gt 0 ]; then
+        LIMIT_BYTES=$(( LIMIT_MB * 1024 * 1024 ))
+        
+        # 获取白名单集合
+        WHITELIST=""
+        if nft list set ip trafficguard whitelist >/dev/null 2>&1; then
+            WHITELIST=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+        fi
+        
+        while read -r ip packets bytes; do
+            if [ -n "$bytes" ] && [ "$bytes" -gt "$LIMIT_BYTES" ]; then
+                # 检查是否在白名单中
+                is_whitelisted=0
+                for w_ip in $WHITELIST; do
+                    if [ "$w_ip" = "$ip" ]; then
+                        is_whitelisted=1
+                        break
+                    fi
+                done
+                
+                if [ "$is_whitelisted" -eq 0 ]; then
+                    # 检查是否已经被封禁
+                    is_banned=0
+                    if nft list set ip trafficguard manual_banned 2>/dev/null | grep -q "$ip"; then
+                        is_banned=1
+                    fi
+                    
+                    if [ "$is_banned" -eq 0 ]; then
+                        echo "[$NOW] [警告] IP $ip 流量超限 ($((bytes/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
+                        nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
+                            echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
+                    fi
+                fi
+            fi
+        done <<< "$TRAFFIC_DATA"
+    fi
+    # ───────────────
+
     # 原子追加：先写临时文件，再追加到统计文件
     TMPFILE=$(mktemp "$STATS_DIR/.tmp.XXXXXX")
     echo "# $NOW" > "$TMPFILE"
