@@ -206,7 +206,7 @@ if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
 fi
 
 SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
-if [ -t 0 ] || [ -c /dev/tty ]; then
+if [ "${TG_IS_UPDATE:-0}" -eq 0 ] && ([ -t 0 ] || [ -c /dev/tty ]); then
     echo ""
     if [ -n "$EXISTING_SSH_PORT" ]; then
         info "检测到已安装的 SSH 端口: $EXISTING_SSH_PORT"

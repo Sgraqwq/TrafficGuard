@@ -1189,7 +1189,7 @@ check_update() {
     
     # 执行安装脚本 (热更新模式)
     chmod +x "$tmp_script"
-    if sudo TG_IS_UPDATE=1 bash "$tmp_script"; then
+    if sudo env TG_IS_UPDATE=1 bash "$tmp_script"; then
         rm -f "$tmp_script"
         echo
         echo -e "${GREEN}更新成功！正在重新加载管理台...${NC}"
