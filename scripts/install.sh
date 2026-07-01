@@ -440,32 +440,7 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             warn "创建 nftables 链 'TRAFFICGUARD' 失败"
     fi
 
-    # === 1. 流量统计集合（入站/出站分别统计） ===
-    # 入站流量统计（外部 IP 访问本机）
-    if ! nft list set ip trafficguard inbound_traffic >/dev/null 2>&1; then
-        nft add set ip trafficguard inbound_traffic \
-            '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
-            warn "创建 nftables 入站流量统计 set 失败"
-    fi
-    # 出站流量统计（本机访问外部 IP）
-    if ! nft list set ip trafficguard outbound_traffic >/dev/null 2>&1; then
-        nft add set ip trafficguard outbound_traffic \
-            '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
-            warn "创建 nftables 出站流量统计 set 失败"
-    fi
-    # 添加统计规则
-    RULE_INBOUND="add @inbound_traffic { ip daddr counter }"
-    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_INBOUND"; then
-        nft add rule ip trafficguard TRAFFICGUARD "$RULE_INBOUND" 2>/dev/null || \
-            warn "添加 nftables 入站流量统计规则失败"
-    fi
-    RULE_OUTBOUND="add @outbound_traffic { ip saddr counter }"
-    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_OUTBOUND"; then
-        nft add rule ip trafficguard TRAFFICGUARD "$RULE_OUTBOUND" 2>/dev/null || \
-            warn "添加 nftables 出站流量统计规则失败"
-    fi
-
-    # === 2. 白名单集合 ===
+    # === 1. 白名单集合（优先放行，必须在流量统计之前）===
     if ! nft list set ip trafficguard whitelist >/dev/null 2>&1; then
         nft add set ip trafficguard whitelist '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
             warn "创建 nftables 白名单 set 失败"
@@ -487,12 +462,13 @@ if [ "$FW_BACKEND" = "nftables" ]; then
     fi
     # 持久化白名单到文件
     tg_save_whitelist
+    # 白名单放行规则（第 1 条规则，最高优先级）
     RULE_WHITELIST="ip saddr @whitelist accept"
     if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_WHITELIST"; then
         nft add rule ip trafficguard TRAFFICGUARD "$RULE_WHITELIST" 2>/dev/null || warn "添加白名单放行规则失败"
     fi
 
-    # === 3. 手动黑名单集合 ===
+    # === 2. 手动黑名单集合（白名单通过后，立即拦截黑名单）===
     if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
         nft add set ip trafficguard manual_banned '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
             warn "创建 nftables 手动黑名单 set 失败"
@@ -509,8 +485,32 @@ if [ "$FW_BACKEND" = "nftables" ]; then
         nft add rule ip trafficguard TRAFFICGUARD "$RULE_MANUAL" 2>/dev/null || warn "添加手动黑名单规则失败"
     fi
 
+    # === 3. 流量统计集合（仅对未被白名单/黑名单处理的流量计数）===
+    # 入站流量统计（外部 IP 访问本机）
+    if ! nft list set ip trafficguard inbound_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard inbound_traffic \
+            '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
+            warn "创建 nftables 入站流量统计 set 失败"
+    fi
+    # 出站流量统计（本机访问外部 IP）
+    if ! nft list set ip trafficguard outbound_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard outbound_traffic \
+            '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
+            warn "创建 nftables 出站流量统计 set 失败"
+    fi
+    # 添加统计规则
+    RULE_INBOUND="add @inbound_traffic { ip saddr counter }"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_INBOUND"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_INBOUND" 2>/dev/null || \
+            warn "添加 nftables 入站流量统计规则失败"
+    fi
+    RULE_OUTBOUND="add @outbound_traffic { ip daddr counter }"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_OUTBOUND"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_OUTBOUND" 2>/dev/null || \
+            warn "添加 nftables 出站流量统计规则失败"
+    fi
+
     # === 4. 并发连接数限制 ===
-    # 单 IP 超出指定个 TCP 状态，直接丢弃新连接 (类似 limit_conn)
     if ! nft list set ip trafficguard conn_limit >/dev/null 2>&1; then
         nft add set ip trafficguard conn_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null
     fi
@@ -522,7 +522,6 @@ if [ "$FW_BACKEND" = "nftables" ]; then
     fi
 
     # === 5. 新建连接频率限制 ===
-    # 单 IP 发起新连接超过速率，直接丢弃 (类似 limit_req)
     if ! nft list set ip trafficguard rate_limit >/dev/null 2>&1; then
         nft add set ip trafficguard rate_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null
     fi
@@ -532,6 +531,7 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             nft add rule ip trafficguard TRAFFICGUARD "$RULE_RATE" 2>/dev/null || warn "添加频率限制规则失败"
         fi
     fi
+
 
     info "nftables 底层防护墙与统计规则配置完毕"
 else

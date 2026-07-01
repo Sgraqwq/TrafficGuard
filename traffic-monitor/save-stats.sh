@@ -131,23 +131,53 @@ if [ -n "$TRAFFIC_DATA" ]; then
         exit 1
     fi
     
-    # ── 大流量自动查杀（基于入站流量） ──
+    # ── 大流量自动查杀（基于今日入站流量增量） ──
     TG_CONF="/etc/trafficguard/trafficguard.conf"
     LIMIT_MB=$(get_config_int "TG_DAILY_TRAFFIC_LIMIT_MB" "$TG_CONF" "0")
     
     if [ "$LIMIT_MB" -gt 0 ]; then
         LIMIT_BYTES=$(( LIMIT_MB * 1024 * 1024 ))
         
-        # 获取白名单集合
+        # 获取白名单集合（失败时保持为空，不封禁任何人）
         WHITELIST=""
         if nft list set ip trafficguard whitelist >/dev/null 2>&1; then
             WHITELIST=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
         fi
         
+        # 读取今日已记录的历史快照，计算本次增量
+        # 今日统计文件中的最后一次记录作为基准
+        PREV_SNAPSHOT=""
+        if [ -f "$STATS_FILE" ]; then
+            # 找到今天文件中每个 IP 的最大 in_bytes（最近一次记录）
+            PREV_SNAPSHOT=$(awk '/^[0-9]/{
+                if (!seen[$1] || $3 > max_bytes[$1]) {
+                    seen[$1] = 1; max_bytes[$1] = $3
+                }
+            } END {
+                for (ip in max_bytes) printf "%s %s\n", ip, max_bytes[ip]
+            }' "$STATS_FILE" 2>/dev/null || true)
+        fi
+        
         while read -r ip in_pkts in_bytes out_pkts out_bytes; do
-            # 使用入站流量判断是否超限
-            if [ -n "$in_bytes" ] && [[ "$in_bytes" =~ ^[0-9]+$ ]] && [ "$in_bytes" -gt "$LIMIT_BYTES" ]; then
-                # 检查是否在白名单中
+            # 验证 in_bytes 是整数
+            if [ -z "$in_bytes" ] || ! [[ "$in_bytes" =~ ^[0-9]+$ ]]; then
+                continue
+            fi
+            
+            # 计算今日增量（当前值 - 上次快照值）
+            prev_bytes=0
+            if [ -n "$PREV_SNAPSHOT" ]; then
+                prev_line=$(echo "$PREV_SNAPSHOT" | grep -F "$ip " | head -1 || true)
+                if [ -n "$prev_line" ]; then
+                    prev_bytes=$(echo "$prev_line" | awk '{print $2}')
+                    [[ "$prev_bytes" =~ ^[0-9]+$ ]] || prev_bytes=0
+                fi
+            fi
+            delta_bytes=$(( in_bytes - prev_bytes ))
+            [ "$delta_bytes" -lt 0 ] && delta_bytes="$in_bytes"  # 计数器重置后差值为负，用绝对值
+            
+            if [ "$delta_bytes" -gt "$LIMIT_BYTES" ]; then
+                # 检查是否在白名单中（精确匹配）
                 is_whitelisted=0
                 for w_ip in $WHITELIST; do
                     if [ "$w_ip" = "$ip" ]; then
@@ -159,12 +189,12 @@ if [ -n "$TRAFFIC_DATA" ]; then
                 if [ "$is_whitelisted" -eq 0 ]; then
                     # 检查是否已经被封禁
                     is_banned=0
-                    if nft list set ip trafficguard manual_banned 2>/dev/null | grep -qE "(^|[^0-9.])${ip//./\\.}([^0-9.]|$)"; then
+                    if nft list set ip trafficguard manual_banned 2>/dev/null | grep -qF "$ip"; then
                         is_banned=1
                     fi
                     
                     if [ "$is_banned" -eq 0 ]; then
-                        echo "[$NOW] [警告] IP $ip 入站流量超限 ($((in_bytes/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
+                        echo "[$NOW] [警告] IP $ip 今日入站流量超限 ($((delta_bytes/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
                         nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
                             echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
                         # 持久化黑名单到文件（防止重启后丢失）
@@ -176,6 +206,7 @@ if [ -n "$TRAFFIC_DATA" ]; then
         done <<< "$TRAFFIC_DATA"
     fi
     # ───────────────
+
 
     # 直接追加到统计文件
     {
