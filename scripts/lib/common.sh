@@ -2,7 +2,7 @@
 # TrafficGuard 公共函数库
 # 被 install.sh 和 uninstall.sh 加载
 
-# ── 颜色与日志 ──────────────────────────────────────────
+# ── 颜色与日志 
 export RED='\033[0;31m'
 export GREEN='\033[0;32m'
 export YELLOW='\033[0;33m'
@@ -13,7 +13,7 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# ── 临时文件追踪 ────────────────────────────────────────
+# ── 临时文件追踪 
 TEMP_FILES=""
 
 # 清理临时文件，脚本退出时自动调用
@@ -28,7 +28,7 @@ cleanup_temp() {
     fi
 }
 
-# ── 原子写入 ─────────────────────────────────────────────
+# ── 原子写入 
 # 使用 mktemp + mv 模式，避免中断留下部分配置
 write_file_atomic() {
     local dst="$1"
@@ -36,18 +36,18 @@ write_file_atomic() {
     tmp_dir="$(dirname "$dst")"
     local tmp
 
-    tmp=$(mktemp) || error "创建临时文件失败"
+    mkdir -p "$tmp_dir" || { error "创建目录失败: $tmp_dir"; }
+    tmp=$(mktemp "${tmp_dir}/.tmp.XXXXXX") || error "创建临时文件失败"
     TEMP_FILES="$TEMP_FILES $tmp"
 
     cat > "$tmp" || { error "写入临时文件失败: $dst"; }
-    mkdir -p "$tmp_dir" || { error "创建目录失败: $tmp_dir"; }
     mv "$tmp" "$dst" || { error "移动文件失败: $dst"; }
 
     # 已成功移至目标路径，从追踪列表移除
     TEMP_FILES="${TEMP_FILES// "$tmp"/}"
 }
 
-# ── 初始化系统检测 ──────────────────────────────────────
+# ── 初始化系统检测 
 # 返回值: systemd / openrc / sysvinit / unknown
 detect_init_system() {
     # 方法1: 检查 /run/systemd/system 目录（最可靠）
@@ -77,7 +77,7 @@ detect_init_system() {
     echo "unknown"
 }
 
-# ── 防火墙后端检测 ──────────────────────────────────────
+# ── 防火墙后端检测 
 # 返回值: nftables / iptables / unknown
 detect_firewall_backend() {
     if command -v nft >/dev/null 2>&1; then
@@ -89,7 +89,7 @@ detect_firewall_backend() {
     fi
 }
 
-# ── Fail2Ban 版本检测 ──────────────────────────────────
+# ── Fail2Ban 版本检测 
 # 返回值: 版本号 (如 "0.9", "1.0") / unknown / not_installed
 detect_fail2ban_version() {
     if ! command -v fail2ban-client >/dev/null 2>&1; then
@@ -101,7 +101,7 @@ detect_fail2ban_version() {
     echo "$ver"
 }
 
-# ── Nginx 配置目录检测 ─────────────────────────────────
+# ── Nginx 配置目录检测 
 # 返回值: 目录路径，默认 /etc/nginx/conf.d
 detect_nginx_conf_dir() {
     for dir in /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/http.d; do
@@ -113,7 +113,7 @@ detect_nginx_conf_dir() {
     echo "/etc/nginx/conf.d"
 }
 
-# ── 认证日志路径检测 ────────────────────────────────────
+# ── 认证日志路径检测 
 # 返回值: 日志文件路径，默认 /var/log/auth.log
 detect_auth_log() {
     for f in /var/log/auth.log /var/log/secure /var/log/messages; do
@@ -125,7 +125,7 @@ detect_auth_log() {
     echo "/var/log/auth.log"
 }
 
-# ── 统一服务管理 ────────────────────────────────────────
+# ── 统一服务管理 
 # 参数: <action> <service> [init_system]
 #   action: start|stop|restart|reload|status|enable|disable
 #   service: 服务名称
@@ -141,10 +141,7 @@ service_control() {
 
     case "$init_system" in
         systemd)
-            case "$action" in
-                enable|disable) systemctl "$action" "$service" ;;
-                *)              systemctl "$action" "$service" ;;
-            esac
+            systemctl "$action" "$service"
             ;;
         openrc)
             rc-service "$service" "$action"
@@ -183,11 +180,11 @@ service_is_active() {
     return $result
 }
 
-# ── nftables 安全操作 ─────────────────────────────────
+# ── nftables 安全操作 
 # 检查 nftables 表是否存在
 nft_table_exists() {
     local table=$1
-    nft list tables 2>/dev/null | grep -q "^table ip ${table}$" 2>/dev/null
+    nft list tables 2>/dev/null | grep -qF "table ip ${table}" 2>/dev/null
 }
 
 # 检查 nftables 链是否存在
@@ -234,7 +231,7 @@ nft_delete_table_safe() {
     fi
 }
 
-# ── nftables 可用性检查 ────────────────────────────────
+# ── nftables 可用性检查 
 check_nftables_available() {
     if ! command -v nft >/dev/null 2>&1; then
         error "nftables 未安装，请安装 nftables 后重试"

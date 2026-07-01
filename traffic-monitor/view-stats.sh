@@ -84,10 +84,11 @@ show_summary() {
     echo "----------------------------------------"
     
     # 统计每个日期的记录数
+    local date count
     for file in "$STATS_DIR"/traffic_*.log; do
         if [ -f "$file" ]; then
-            local date=$(basename "$file" | sed 's/traffic_//;s/.log//')
-            local count=$(grep -v "^#" "$file" | grep -v "^$" | wc -l)
+            date=$(basename "$file" | sed 's/traffic_//;s/\.log$//')
+            count=$(grep -v "^#" "$file" | grep -v "^$" | wc -l)
             echo "  $date                  $count"
         fi
     done

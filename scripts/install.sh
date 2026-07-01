@@ -11,10 +11,10 @@
 
 set -euo pipefail
 
-# ── 环境变量 ────────────────────────────────────────────
+# ── 环境变量 
 export DEBIAN_FRONTEND=noninteractive
 
-# ── 仓库地址 ─────────────────────────────────────────────
+# ── 仓库地址 
 TG_REPO="${TG_REPO:-https://github.com/Sgraqwq/TrafficGuard}"
 
 # URL 验证：防止恶意 URL 注入
@@ -24,7 +24,8 @@ validate_tg_repo() {
         echo "[ERROR] TG_REPO 地址必须以 http:// 或 https:// 开头" >&2
         exit 1
     fi
-    if echo "$url" | grep -qE '[    ;&|`$(){}]' ; then
+    # 检测危险字符：空格、Tab、分号、管道、反引号、美元符号、括号、花括号、与号
+    if echo "$url" | grep -qE '[[:space:];|&`$(){}]' ; then
         echo "[ERROR] TG_REPO 地址包含非法字符" >&2
         exit 1
     fi
@@ -33,7 +34,7 @@ validate_tg_repo "$TG_REPO"
 
 TG_RAW="${TG_REPO/github.com/raw.githubusercontent.com}/main"
 
-# ── 加载公共库 ─────────────────────────────────────────
+# ── 加载公共库 
 load_common_lib() {
     # 优先级 1: 本地文件系统
     local script_dir
@@ -60,13 +61,13 @@ load_common_lib() {
 }
 load_common_lib
 
-# ── Trap 处理 ───────────────────────────────────────────
+# ── Trap 处理 
 trap cleanup_temp EXIT INT TERM
 
-# ── 检查 root ────────────────────────────────────────────
+# ── 检查 root 
 [ "$(id -u)" -eq 0 ] || error "请使用 root 运行"
 
-# ── 系统环境检测 ────────────────────────────────────────
+# ── 系统环境检测 
 INIT_SYSTEM=$(detect_init_system)
 FW_BACKEND=$(detect_firewall_backend)
 F2B_VER=$(detect_fail2ban_version)
@@ -81,7 +82,7 @@ info "  Nginx 配置目录: $NGINX_CONF_DIR"
 info "  认证日志路径: $AUTH_LOG"
 info ""
 
-# ── 版本兼容性检查 ──────────────────────────────────────
+# ── 版本兼容性检查 
 if [ "$F2B_VER" != "not_installed" ] && [ "$F2B_VER" != "unknown" ]; then
     # Fail2Ban 0.9.x 不支持 nftables 后端语法
     if echo "$F2B_VER" | grep -qE '^0\.'; then
@@ -90,7 +91,7 @@ if [ "$F2B_VER" != "not_installed" ] && [ "$F2B_VER" != "unknown" ]; then
     fi
 fi
 
-# ── 包管理器检测 ────────────────────────────────────────
+# ── 包管理器检测 
 detect_package_manager() {
     for mgr in apt-get apt dnf yum zypper pacman apk; do
         if command -v "$mgr" >/dev/null 2>&1; then
@@ -105,7 +106,7 @@ PKG_MGR=$(detect_package_manager)
 info "包管理器: $PKG_MGR"
 echo ""
 
-# ── 安装辅助函数 ────────────────────────────────────────
+# ── 安装辅助函数 
 install_pkg() {
     local pkg=$1
     info "安装 $pkg"
@@ -132,7 +133,7 @@ ensure_cmd() {
     info "$desc 安装成功"
 }
 
-# ── 下载辅助函数（带超时） ──────────────────────────────
+# ── 下载辅助函数
 dl() {
     local url="$TG_RAW/$1" dst="$2"
     mkdir -p "$(dirname "$dst")" || error "创建目录失败: $(dirname "$dst")"
@@ -146,16 +147,15 @@ dl_chmod() {
     chmod +x "$dst"
 }
 
-# ═══════════════════════════════════════════════════════════
+
 #  安装开始
-# ═══════════════════════════════════════════════════════════
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    TrafficGuard 安装程序${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# ── 0. 前置检查 ──────────────────────────────────────────
+# ── 0. 前置检查 
 info "前置环境检查..."
 echo ""
 
@@ -170,7 +170,7 @@ echo ""
 info "前置检查通过"
 echo ""
 
-# ── 1. 系统依赖 ──────────────────────────────────────────
+# ── 1. 系统依赖 
 info "检测系统依赖..."
 echo ""
 
@@ -186,7 +186,7 @@ echo ""
 info "依赖检测完成"
 echo ""
 
-# ── 2. Nginx 配置 ────────────────────────────────────────
+# ── 2. Nginx 配置 
 info "安装 Nginx 配置"
 write_file_atomic "$NGINX_CONF_DIR/trafficguard.conf" <<'NGINX_CONF'
 # TrafficGuard - Nginx 限制配置
@@ -250,7 +250,7 @@ fi
 info "Nginx 已就绪"
 echo ""
 
-# ── 3. Fail2Ban 配置 ────────────────────────────────────
+# ── 3. Fail2Ban 配置 
 info "安装 Fail2Ban 配置"
 
 # 写入 jail.d/trafficguard.conf（不再覆盖 jail.local）
@@ -321,12 +321,25 @@ fi
 
 # Nginx 错误日志路径检测
 NGINX_LOG="/var/log/nginx/error.log"
-if [ ! -f "$NGINX_LOG" ] && [ -f /var/log/nginx/error.log ]; then
-    NGINX_LOG="/var/log/nginx/error.log"
+if [ ! -f "$NGINX_LOG" ]; then
+    # 尝试从 nginx 配置中提取 error_log 路径
+    ALT_LOG=$(nginx -T 2>/dev/null | grep -m1 'error_log' | awk '{print $2}' | tr -d ';')
+    if [ -n "$ALT_LOG" ] && [ "$ALT_LOG" != "stderr" ] && [ -f "$ALT_LOG" ]; then
+        NGINX_LOG="$ALT_LOG"
+    else
+        # 尝试常见备选路径
+        for candidate in /var/log/nginx/error.log /var/log/error.log /var/log/nginx/errors.log; do
+            if [ -f "$candidate" ]; then
+                NGINX_LOG="$candidate"
+                break
+            fi
+        done
+    fi
 fi
-# 如果 nginx 日志不在标准位置，也更新
+# 如果 nginx 日志不在标准位置，更新 Fail2Ban 配置
 if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
     if [ "$NGINX_LOG" != "/var/log/nginx/error.log" ]; then
+        info "检测到 Nginx 错误日志路径: $NGINX_LOG"
         sed -i "s|logpath = /var/log/nginx/error.log|logpath = $NGINX_LOG|g" \
             /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || true
     fi
@@ -396,7 +409,7 @@ else
 fi
 echo ""
 
-# ── 4. 命令行工具 ────────────────────────────────────────
+# ── 4. 命令行工具 
 info "安装命令行工具"
 dl_chmod "traffic-monitor/tgctl" /usr/local/bin/tgctl
 
@@ -407,19 +420,19 @@ fi
 
 info "命令行工具已安装到 /usr/local/bin/tgctl"
 
-# ── 5. 流量统计脚本 ──────────────────────────────────────
+# ── 5. 流量统计脚本 
 info "安装流量统计脚本"
 dl_chmod "traffic-monitor/save-stats.sh" /usr/local/bin/traffic-save-stats
 dl_chmod "traffic-monitor/view-stats.sh" /usr/local/bin/traffic-view-stats
 info "流量统计脚本已安装"
 
-# ── 6. 创建目录 ──────────────────────────────────────────
+# ── 6. 创建目录 
 info "创建目录"
 mkdir -p /var/lib/trafficguard/stats || warn "创建 /var/lib/trafficguard/stats 失败"
 mkdir -p /var/log/trafficguard || warn "创建 /var/log/trafficguard 失败"
 info "目录已创建"
 
-# ── 7. 定时任务 ──────────────────────────────────────────
+# ── 7. 定时任务 
 info "设置定时任务（每小时保存一次流量统计）"
 if (crontab -l 2>/dev/null | grep -v "traffic-save-stats"; echo "0 * * * * /usr/local/bin/traffic-save-stats") | crontab - 2>/dev/null; then
     info "定时任务已设置"
@@ -428,11 +441,17 @@ else
     warn "  echo '0 * * * * /usr/local/bin/traffic-save-stats' | crontab -"
 fi
 
-# ── 8. nftables 流量统计（幂等创建） ────────────────────
+# ── 8. nftables 流量统计（幂等创建） 
 info "创建 nftables 流量统计表"
 if [ "$FW_BACKEND" = "nftables" ]; then
     nft_create_table_safe trafficguard
-    nft_create_chain_safe trafficguard TRAFFICGUARD
+
+    # 创建带 hook 的链（必须有 hook 才能拦截流量进行统计）
+    if ! nft_chain_exists trafficguard TRAFFICGUARD; then
+        nft add chain ip trafficguard TRAFFICGUARD \
+            '{ type filter hook input priority 0 ; policy accept ; }' 2>/dev/null || \
+            warn "创建 nftables 链 'TRAFFICGUARD' 失败"
+    fi
 
     # 使用动态 set 统计每个 IP 的流量
     if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
@@ -452,7 +471,7 @@ else
     warn "未检测到 nftables，跳过流量统计规则创建"
 fi
 
-# ── 完成 ─────────────────────────────────────────────────
+# ── 完成 
 echo ""
 info "安装完成"
 echo ""

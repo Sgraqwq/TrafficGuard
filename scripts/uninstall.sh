@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-# ── 仓库地址 ─────────────────────────────────────────────
+# 仓库地址
 TG_REPO="${TG_REPO:-https://github.com/Sgraqwq/TrafficGuard}"
 
 # URL 验证
@@ -21,7 +21,8 @@ validate_tg_repo() {
         echo "[ERROR] TG_REPO 地址必须以 http:// 或 https:// 开头" >&2
         exit 1
     fi
-    if echo "$url" | grep -qE '[    ;&|`$(){}]' ; then
+    # 检测危险字符：空格、Tab、分号、管道、反引号、美元符号、括号、花括号、与号
+    if echo "$url" | grep -qE '[[:space:];|&`$(){}]' ; then
         echo "[ERROR] TG_REPO 地址包含非法字符" >&2
         exit 1
     fi
@@ -30,7 +31,7 @@ validate_tg_repo "$TG_REPO"
 
 TG_RAW="${TG_REPO/github.com/raw.githubusercontent.com}/main"
 
-# ── 加载公共库 ─────────────────────────────────────────
+# 加载公共库
 load_common_lib() {
     # 优先级 1: 本地文件系统
     local script_dir
@@ -57,13 +58,13 @@ load_common_lib() {
 }
 load_common_lib
 
-# ── Trap 处理 ───────────────────────────────────────────
+# Trap 处理
 trap cleanup_temp EXIT INT TERM
 
-# ── 检查 root ────────────────────────────────────────────
+# 检查 root
 [ "$(id -u)" -eq 0 ] || error "请使用 root 运行"
 
-# ── 系统环境检测 ────────────────────────────────────────
+# 系统环境检测
 INIT_SYSTEM=$(detect_init_system)
 FW_BACKEND=$(detect_firewall_backend)
 
@@ -72,16 +73,14 @@ info "  初始化系统: $INIT_SYSTEM"
 info "  防火墙后端: $FW_BACKEND"
 echo ""
 
-# ═══════════════════════════════════════════════════════════
-#  卸载开始
-# ═══════════════════════════════════════════════════════════
+# 卸载开始
 
 echo -e "${YELLOW}========================================${NC}"
 echo -e "${YELLOW}    TrafficGuard 卸载程序${NC}"
 echo -e "${YELLOW}========================================${NC}"
 echo ""
 
-# ── 0. 服务状态跟踪 ──────────────────────────────────────
+# 0. 服务状态跟踪
 info "检测服务运行状态..."
 FAIL2BAN_WAS_ACTIVE=false
 NGINX_WAS_ACTIVE=false
@@ -101,7 +100,7 @@ else
 fi
 echo ""
 
-# ── 1. 备份配置 ──────────────────────────────────────────
+# 1. 备份配置
 info "备份配置文件..."
 BACKUP_DIR="/var/backups/trafficguard-$(date +%Y%m%d_%H%M%S)"
 
@@ -124,22 +123,22 @@ backup_file /etc/fail2ban/filter.d/nginx-limit-conn.conf
 info "配置已备份到 $BACKUP_DIR"
 echo ""
 
-# ── 2. 停止服务 ──────────────────────────────────────────
+# 2. 停止服务
 info "停止服务..."
 service_control stop fail2ban "$INIT_SYSTEM" 2>/dev/null || true
 info "Fail2Ban 已停止"
 
-# ── 3. 删除 Fail2Ban 数据库（在重启服务之前） ──────────
+# 3. 删除 Fail2Ban 数据库（在重启服务之前）
 if [ -f /var/lib/fail2ban/fail2ban.sqlite3 ]; then
     rm -f /var/lib/fail2ban/fail2ban.sqlite3 2>/dev/null || true
     info "封禁数据库已清理"
 fi
 
-# ── 4. 删除 nftables 表（在重启服务之前） ──────────────
+# 4. 删除 nftables 表（在重启服务之前）
 nft_delete_table_safe trafficguard
 info "nftables 表已移除"
 
-# ── 5. 删除 Nginx 配置 ──────────────────────────────────
+# 5. 删除 Nginx 配置
 NGINX_CONF_DIR=$(detect_nginx_conf_dir)
 rm -f "$NGINX_CONF_DIR/trafficguard.conf" 2>/dev/null || true
 info "Nginx 配置已移除"
@@ -154,7 +153,7 @@ if [ "$NGINX_WAS_ACTIVE" = true ]; then
     fi
 fi
 
-# ── 6. 删除 Fail2Ban 配置 ───────────────────────────────
+# 6. 删除 Fail2Ban 配置
 # 删除 filter 文件
 rm -f /etc/fail2ban/filter.d/nginx-limit-req.conf 2>/dev/null || true
 rm -f /etc/fail2ban/filter.d/nginx-limit-conn.conf 2>/dev/null || true
@@ -169,13 +168,10 @@ JAIL_FILE="/etc/fail2ban/jail.local"
 if [ -f "$JAIL_FILE" ]; then
     # 先备份
     cp "$JAIL_FILE" "${JAIL_FILE}.bak" 2>/dev/null || true
-    # 使用 awk 注释掉 TrafficGuard 添加的所有配置段
+    # 使用 awk 注释掉 TrafficGuard 添加的配置段
     awk '
     /^\[nginx-limit-req\]/ { in_tg = 1; print; next }
     /^\[nginx-limit-conn\]/ { in_tg = 1; print; next }
-    /^\[sshd\]/              { in_tg = 1; print; next }
-    /^\[recidive\]/          { in_tg = 1; print; next }
-    /^\[DEFAULT\]/           { in_tg = 1; print; next }
     /^\[.*\]/                { in_tg = 0 }
     in_tg                    { print "# " $0; next }
     { print }
@@ -191,7 +187,7 @@ if [ -f "$JAIL_FILE" ]; then
     info "jail.local 已清理"
 fi
 
-# ── 7. 启动 Fail2Ban（仅当之前运行中） ──────────────────
+# 7. 启动 Fail2Ban（仅当之前运行中）
 if [ "$FAIL2BAN_WAS_ACTIVE" = true ]; then
     service_control start fail2ban "$INIT_SYSTEM" 2>/dev/null || true
     info "Fail2Ban 已重新启动"
@@ -199,26 +195,27 @@ fi
 info "Fail2Ban 配置已清理"
 echo ""
 
-# ── 8. 删除命令行工具 ────────────────────────────────────
+# 8. 删除命令行工具
 rm -f /usr/local/bin/tgctl 2>/dev/null || true
 rm -f /usr/bin/tgctl 2>/dev/null || true
 rm -f /usr/local/bin/traffic-save-stats 2>/dev/null || true
 rm -f /usr/local/bin/traffic-view-stats 2>/dev/null || true
 info "命令行工具已移除"
 
-# ── 9. 删除定时任务 ──────────────────────────────────────
-if (crontab -l 2>/dev/null | grep -v "traffic-save-stats") | crontab - 2>/dev/null; then
+# 9. 删除定时任务
+if crontab -l 2>/dev/null | grep -q "traffic-save-stats"; then
+    (crontab -l 2>/dev/null | grep -v "traffic-save-stats") | crontab - 2>/dev/null || true
     info "定时任务已移除"
 else
-    warn "定时任务移除失败，请手动检查: crontab -e"
+    info "未发现 TrafficGuard 定时任务，跳过"
 fi
 
-# ── 10. 删除数据目录 ─────────────────────────────────────
+# 10. 删除数据目录
 rm -rf /var/lib/trafficguard 2>/dev/null || true
 rm -rf /var/log/trafficguard 2>/dev/null || true
 info "数据目录已移除"
 
-# ── 完成 ─────────────────────────────────────────────────
+# 完成
 echo ""
 info "卸载完成"
 echo ""

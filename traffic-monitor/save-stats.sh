@@ -55,12 +55,13 @@ if [ -n "$TRAFFIC_DATA" ]; then
         echo "[$NOW] 错误: 流量数据格式异常，跳过保存" >> "$LOG_FILE"
         exit 1
     fi
-    # 原子写入：先写临时文件，再 mv
+    # 原子追加：先写临时文件，再追加到统计文件
     TMPFILE=$(mktemp "$STATS_DIR/.tmp.XXXXXX")
     echo "# $NOW" > "$TMPFILE"
     echo "$TRAFFIC_DATA" >> "$TMPFILE"
     echo "" >> "$TMPFILE"
-    mv "$TMPFILE" "$STATS_FILE"
+    cat "$TMPFILE" >> "$STATS_FILE"
+    rm -f "$TMPFILE"
     echo "[$NOW] 已保存流量统计到 $STATS_FILE" >> "$LOG_FILE"
 else
     echo "[$NOW] 没有流量数据" >> "$LOG_FILE"
