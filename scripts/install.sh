@@ -419,8 +419,6 @@ echo ""
 
 # 如果在交互式终端中，安装完成后自动启动管理台
 if [ -t 0 ] || [ -c /dev/tty ]; then
-    echo -e "${YELLOW}即将自动进入管理控制台...${NC}"
-    sleep 2
     if command -v tgctl >/dev/null 2>&1; then
         exec tgctl < /dev/tty
     else
