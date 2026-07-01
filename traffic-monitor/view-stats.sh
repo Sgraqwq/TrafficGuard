@@ -151,12 +151,11 @@ show_realtime() {
     }' || true)
     
     # 合并并显示（使用临时文件）
-    TMPDIR=$(mktemp -d 2>/dev/null || echo "/tmp")
-    # 确保异常退出时也清理临时目录
-    trap "rm -rf '$TMPDIR'" EXIT
-    INBOUND_FILE="$TMPDIR/tg_inbound.txt"
-    OUTBOUND_FILE="$TMPDIR/tg_outbound.txt"
-    MERGED_FILE="$TMPDIR/tg_merged.txt"
+    TG_TMPDIR=$(mktemp -d 2>/dev/null || echo "/tmp")
+    trap "rm -rf '$TG_TMPDIR'" EXIT
+    INBOUND_FILE="$TG_TMPDIR/tg_inbound.txt"
+    OUTBOUND_FILE="$TG_TMPDIR/tg_outbound.txt"
+    MERGED_FILE="$TG_TMPDIR/tg_merged.txt"
     
     echo "$INBOUND" > "$INBOUND_FILE" 2>/dev/null || true
     echo "$OUTBOUND" > "$OUTBOUND_FILE" 2>/dev/null || true
@@ -190,14 +189,14 @@ show_realtime() {
     if [ -s "$MERGED_FILE" ]; then
         sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
             # 转换为 MB
-            in_mb=$((in_bytes / 1048576))
-            out_mb=$((out_bytes / 1048576))
+            in_mb=$((${in_bytes:-0} / 1048576))
+            out_mb=$((${out_bytes:-0} / 1048576))
             printf "%-18s %-10s %-10s MB %-10s %-10s MB\n" "$ip" "$in_pkts" "$in_mb" "$out_pkts" "$out_mb"
         done
     fi
     
     # 清理临时文件
-    rm -rf "$TMPDIR" 2>/dev/null || true
+    rm -rf "$TG_TMPDIR" 2>/dev/null || true
     trap - EXIT
     
     echo

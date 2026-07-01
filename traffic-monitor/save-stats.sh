@@ -146,7 +146,7 @@ if [ -n "$TRAFFIC_DATA" ]; then
         
         while read -r ip in_pkts in_bytes out_pkts out_bytes; do
             # 使用入站流量判断是否超限
-            if [ -n "$in_bytes" ] && [ "$in_bytes" -gt "$LIMIT_BYTES" ]; then
+            if [ -n "$in_bytes" ] && [[ "$in_bytes" =~ ^[0-9]+$ ]] && [ "$in_bytes" -gt "$LIMIT_BYTES" ]; then
                 # 检查是否在白名单中
                 is_whitelisted=0
                 for w_ip in $WHITELIST; do

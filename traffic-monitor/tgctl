@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.2.4"
+TG_VERSION="1.2.5"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -674,22 +674,17 @@ show_traffic() {
     echo -e "${CYAN}========================================${NC}"
     echo
     
-    # 检查 nftables 表
     if ! nft list table ip trafficguard >/dev/null 2>&1; then
         echo -e "${YELLOW}nftables 表 'trafficguard' 不存在${NC}"
         echo "请先运行安装脚本创建表"
         return
     fi
-    
-    # 检查 nftables set
     if ! nft list set ip trafficguard inbound_traffic >/dev/null 2>&1; then
         echo -e "${YELLOW}nftables set 'inbound_traffic' 不存在${NC}"
-        echo "请先运行安装脚本创建 set"
         return
     fi
     if ! nft list set ip trafficguard outbound_traffic >/dev/null 2>&1; then
         echo -e "${YELLOW}nftables set 'outbound_traffic' 不存在${NC}"
-        echo "请先运行安装脚本创建 set"
         return
     fi
     
@@ -698,7 +693,6 @@ show_traffic() {
     echo "IP 地址        入站包    入站流量  出站包    出站流量"
     echo "----------------------------------------------------"
     
-    # 获取入站流量
     INBOUND=$(nft list set ip trafficguard inbound_traffic 2>/dev/null | \
     grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ counter packets [0-9]+ bytes [0-9]+' 2>/dev/null | \
     awk '{
@@ -710,7 +704,6 @@ show_traffic() {
         if(ip != "") printf "%s %s %s\n", ip, packets, (bytes ? bytes : "0")
     }' || true)
     
-    # 获取出站流量
     OUTBOUND=$(nft list set ip trafficguard outbound_traffic 2>/dev/null | \
     grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ counter packets [0-9]+ bytes [0-9]+' 2>/dev/null | \
     awk '{
@@ -722,25 +715,23 @@ show_traffic() {
         if(ip != "") printf "%s %s %s\n", ip, packets, (bytes ? bytes : "0")
     }' || true)
     
-    # 合并并显示
-    TMPDIR=$(mktemp -d 2>/dev/null) || TMPDIR="/tmp/tg_$$"
-    mkdir -p "$TMPDIR" 2>/dev/null || true
-    # 确保异常退出时也清理临时目录
-    trap "rm -rf '$TMPDIR'" EXIT
-    INBOUND_FILE="$TMPDIR/tg_inbound.txt"
-    OUTBOUND_FILE="$TMPDIR/tg_outbound.txt"
-    MERGED_FILE="$TMPDIR/tg_merged.txt"
+    # 使用 TG_TMPDIR 避免污染 POSIX TMPDIR 变量
+    TG_TMPDIR=$(mktemp -d 2>/dev/null) || TG_TMPDIR="/tmp/tg_$$"
+    mkdir -p "$TG_TMPDIR" 2>/dev/null || true
+    trap "rm -rf '$TG_TMPDIR'" EXIT
+    INBOUND_FILE="$TG_TMPDIR/tg_inbound.txt"
+    OUTBOUND_FILE="$TG_TMPDIR/tg_outbound.txt"
+    MERGED_FILE="$TG_TMPDIR/tg_merged.txt"
     
     echo "$INBOUND" > "$INBOUND_FILE" 2>/dev/null || true
     echo "$OUTBOUND" > "$OUTBOUND_FILE" 2>/dev/null || true
     
-    # 合并数据
     if [ -s "$INBOUND_FILE" ]; then
         while read -r ip in_pkts in_bytes; do
             out_pkts=0
             out_bytes=0
             if [ -n "$ip" ]; then
-                out_line=$(grep "^$ip " "$OUTBOUND_FILE" 2>/dev/null || true)
+                out_line=$(grep -F "$ip " "$OUTBOUND_FILE" 2>/dev/null | head -1 || true)
                 if [ -n "$out_line" ]; then
                     out_pkts=$(echo "$out_line" | awk '{print $2}')
                     out_bytes=$(echo "$out_line" | awk '{print $3}')
@@ -750,33 +741,30 @@ show_traffic() {
         done < "$INBOUND_FILE" > "$MERGED_FILE" 2>/dev/null || true
     fi
     
-    # 添加仅在出站中出现的 IP
     if [ -s "$OUTBOUND_FILE" ]; then
         while read -r ip out_pkts out_bytes; do
-            if [ -n "$ip" ] && ! grep -q "^$ip " "$MERGED_FILE" 2>/dev/null; then
+            if [ -n "$ip" ] && ! grep -qF "$ip " "$MERGED_FILE" 2>/dev/null; then
                 echo "$ip 0 0 $out_pkts $out_bytes"
             fi
         done < "$OUTBOUND_FILE" >> "$MERGED_FILE" 2>/dev/null || true
     fi
     
-    # 显示结果
     if [ -s "$MERGED_FILE" ]; then
         sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
-            # 转换为 MB（防御性默认值）
             in_mb=$(( ${in_bytes:-0} / 1048576 ))
             out_mb=$(( ${out_bytes:-0} / 1048576 ))
             printf "%-14s %-10s %-10s %-10s %-10s\n" "$ip" "$in_pkts" "${in_mb}MB" "$out_pkts" "${out_mb}MB"
         done || true
     fi
     
-    # 清理临时文件
-    rm -rf "$TMPDIR" 2>/dev/null || true
+    rm -rf "$TG_TMPDIR" 2>/dev/null || true
     trap - EXIT
     
     echo
     echo -e "${YELLOW}按回车继续...${NC}"
     read -r _ </dev/tty || true
 }
+
 
 # 6. 查看历史流量
 show_history_traffic() {
@@ -1092,7 +1080,11 @@ quick_ban_ip() {
         echo -e "${RED}无效的 IP 地址格式: $ip${NC}"
         exit 1
     fi
+    # 只封禁实际存在的 jail，跳过不存在的（防止假阳性错误提示）
     for jail in nginx-limit-req nginx-limit-conn sshd; do
+        if ! fail2ban-client status "$jail" >/dev/null 2>&1; then
+            continue
+        fi
         if fail2ban-client set "$jail" banip "$ip" 2>/dev/null; then
             echo -e "${GREEN}已封禁 $ip (jail: $jail)${NC}"
         else
@@ -1215,7 +1207,11 @@ check_update() {
 # 主函数
 main() {
     check_root
-    check_deps
+    # restore/version/help 不依赖 fail2ban，跳过完整依赖检查
+    case "${1:-}" in
+        restore|version|help|-h|--help) ;;
+        *) check_deps ;;
+    esac
 
     # 命令行参数分发
     if [ $# -gt 0 ]; then
