@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.0.9"
+TG_VERSION="1.1.0"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -22,6 +22,49 @@ get_config_int() {
         fi
     fi
     echo "$default_val"
+}
+
+# ── 初始化系统检测
+detect_init_system() {
+    if [ -d /run/systemd/system ]; then echo "systemd"; return 0; fi
+    if command -v systemctl >/dev/null 2>&1; then echo "systemd"; return 0; fi
+    if command -v rc-service >/dev/null 2>&1; then echo "openrc"; return 0; fi
+    if command -v service >/dev/null 2>&1; then echo "sysvinit"; return 0; fi
+    echo "unknown"
+}
+
+# ── 统一服务管理
+service_control() {
+    local action=$1 service=$2
+    local init_system="${3:-$(detect_init_system)}"
+    case "$init_system" in
+        systemd) systemctl "$action" "$service" ;;
+        openrc)
+            case "$action" in
+                enable) rc-update add "$service" ;;
+                disable) rc-update del "$service" ;;
+                *) rc-service "$service" "$action" ;;
+            esac
+            ;;
+        sysvinit)
+            case "$action" in
+                enable)  update-rc.d "$service" enable 2>/dev/null || chkconfig "$service" on 2>/dev/null || return 1 ;;
+                disable) update-rc.d "$service" disable 2>/dev/null || chkconfig "$service" off 2>/dev/null || return 1 ;;
+                *) service "$service" "$action" ;;
+            esac
+            ;;
+        *) echo "不支持的 init 系统: $init_system" >&2; return 1 ;;
+    esac
+}
+
+# 检查服务是否运行中
+service_is_active() {
+    local service=$1
+    local init_system="${2:-$(detect_init_system)}"
+    case "$init_system" in
+        systemd) systemctl is-active --quiet "$service" 2>/dev/null ;;
+        *) service_control status "$service" "$init_system" >/dev/null 2>&1 ;;
+    esac
 }
 
 # 颜色定义
@@ -212,7 +255,7 @@ uninstall_trafficguard() {
 
     # 2. 停止 Fail2Ban
     echo -e "[-] 停止 Fail2Ban 服务..."
-    systemctl stop fail2ban >/dev/null 2>&1 || true
+    service_control stop fail2ban >/dev/null 2>&1 || true
     
     # 3. 删除 nftables 表
     echo -e "[-] 删除 nftables 规则..."
@@ -229,7 +272,7 @@ uninstall_trafficguard() {
         sed -i '/\[nginx-limit-conn\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
     fi
     # 尝试重启 Fail2Ban 以恢复干净状态
-    systemctl start fail2ban >/dev/null 2>&1 || true
+    service_control start fail2ban >/dev/null 2>&1 || true
 
     # 5. 清理配置、数据和日志
     echo -e "[-] 删除配置、数据和日志目录..."
@@ -262,7 +305,7 @@ show_status() {
     
     # Fail2Ban 状态
     echo -e "${BOLD}Fail2Ban 状态:${NC}"
-    if systemctl is-active --quiet fail2ban; then
+    if service_is_active fail2ban; then
         echo -e "  状态: ${GREEN}运行中${NC}"
     else
         echo -e "  状态: ${RED}未运行${NC}"
@@ -531,6 +574,8 @@ show_traffic() {
     # 合并并显示
     TMPDIR=$(mktemp -d 2>/dev/null) || TMPDIR="/tmp/tg_$$"
     mkdir -p "$TMPDIR" 2>/dev/null || true
+    # 确保异常退出时也清理临时目录
+    trap "rm -rf '$TMPDIR'" EXIT
     INBOUND_FILE="$TMPDIR/tg_inbound.txt"
     OUTBOUND_FILE="$TMPDIR/tg_outbound.txt"
     MERGED_FILE="$TMPDIR/tg_merged.txt"
@@ -575,6 +620,7 @@ show_traffic() {
     
     # 清理临时文件
     rm -rf "$TMPDIR" 2>/dev/null || true
+    trap - EXIT
     
     echo
     echo -e "${YELLOW}按回车继续...${NC}"
@@ -747,7 +793,7 @@ config_management() {
         3)
             echo
             echo -e "${BOLD}重载配置...${NC}"
-            systemctl reload fail2ban
+            service_control reload fail2ban 2>/dev/null || service_control restart fail2ban
             echo -e "${GREEN}Fail2Ban 配置已重载${NC}"
             echo
             ;;
@@ -821,7 +867,11 @@ service_management() {
     echo
     
     echo -e "${BOLD}服务状态:${NC}"
-    echo "  Fail2Ban:  $(systemctl is-active fail2ban 2>/dev/null || echo '未运行')"
+    if service_is_active fail2ban; then
+        echo "  Fail2Ban:  运行中"
+    else
+        echo "  Fail2Ban:  未运行"
+    fi
     echo
     
     echo -e "${BOLD}操作:${NC}"
@@ -835,15 +885,15 @@ service_management() {
     read -p "请选择 [1-6]: " choice || return
     
     case $choice in
-        1) systemctl start fail2ban && echo -e "${GREEN}Fail2Ban 已启动${NC}" ;;
-        2) systemctl stop fail2ban && echo -e "${GREEN}Fail2Ban 已停止${NC}" ;;
-        3) systemctl restart fail2ban && echo -e "${GREEN}Fail2Ban 已重启${NC}" ;;
+        1) service_control start fail2ban && echo -e "${GREEN}Fail2Ban 已启动${NC}" ;;
+        2) service_control stop fail2ban && echo -e "${GREEN}Fail2Ban 已停止${NC}" ;;
+        3) service_control restart fail2ban && echo -e "${GREEN}Fail2Ban 已重启${NC}" ;;
         4)
-            systemctl enable fail2ban
+            service_control enable fail2ban
             echo -e "${GREEN}已启用开机启动${NC}"
             ;;
         5)
-            systemctl disable fail2ban
+            service_control disable fail2ban
             echo -e "${GREEN}已禁用开机启动${NC}"
             ;;
         6)

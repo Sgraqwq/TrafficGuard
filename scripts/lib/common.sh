@@ -3,7 +3,7 @@
 # 被 install.sh 和 uninstall.sh 加载
 
 # ── 版本信息
-export TG_VERSION="1.0.9"
+export TG_VERSION="1.1.0"
 export TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # ── 颜色与日志 
@@ -203,12 +203,20 @@ nft_chain_exists() {
 }
 
 # 检查 nftables 规则是否已存在
+# 通过提取规则中的 @setname 作为唯一标识符进行匹配
 nft_rule_exists() {
     local table=$1
     local chain=$2
     local rule=$3
     if nft_chain_exists "$table" "$chain"; then
-        nft list chain ip "$table" "$chain" 2>/dev/null | grep -qFe "$rule"
+        local rule_key
+        # 优先提取 @setname 作为唯一标识（每条规则引用不同的集合）
+        rule_key=$(echo "$rule" | grep -oE '@[a-zA-Z_][a-zA-Z0-9_]*' | head -1)
+        if [ -z "$rule_key" ]; then
+            # 没有 @setname 时回退到前3个词
+            rule_key=$(echo "$rule" | sed 's/^[[:space:]]*//' | awk '{print $1, $2, $3}')
+        fi
+        nft list chain ip "$table" "$chain" 2>/dev/null | grep -qF "$rule_key"
         return $?
     fi
     return 1

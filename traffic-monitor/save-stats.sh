@@ -83,40 +83,44 @@ OUTBOUND_DATA=$(nft list set ip trafficguard outbound_traffic 2>/dev/null | \
 # 输出格式: IP in_packets in_bytes out_packets out_bytes
 TRAFFIC_DATA=""
 if [ -n "$INBOUND_DATA" ] || [ -n "$OUTBOUND_DATA" ]; then
-    TRAFFIC_DATA=$(paste <(echo "$INBOUND_DATA") <(echo "$OUTBOUND_DATA") 2>/dev/null | \
-        awk '{
-            # 入站数据
-            if(NF >= 3 && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
-                in_ip = $1; in_pkts = $2; in_bytes = $3
-            }
-            # 出站数据
-            if(NF >= 6 && $4 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
-                out_ip = $4; out_pkts = $5; out_bytes = $6
-            }
-            # 如果只有一个方向有数据
-            if(in_ip != "") printf "%s %s %s 0 0\n", in_ip, in_pkts, in_bytes
-            if(out_ip != "" && out_ip != in_ip) printf "%s 0 0 %s %s\n", out_ip, out_pkts, out_bytes
-        }' || true)
+    TMPDIR_STATS=$(mktemp -d /tmp/tg_stats_XXXXXX 2>/dev/null) || { TMPDIR_STATS="/tmp/tg_stats_$$"; mkdir -p "$TMPDIR_STATS" 2>/dev/null || true; }
+    INBOUND_FILE="$TMPDIR_STATS/inbound.txt"
+    OUTBOUND_FILE="$TMPDIR_STATS/outbound.txt"
+    MERGED_FILE="$TMPDIR_STATS/merged.txt"
     
-    # 如果 paste 失败，使用简单的合并方式
-    if [ -z "$TRAFFIC_DATA" ]; then
-        # 先处理入站
-        if [ -n "$INBOUND_DATA" ]; then
-            while read -r ip pkts bytes; do
-                echo "$ip $pkts $bytes 0 0"
-            done <<< "$INBOUND_DATA"
-        fi
-        # 再处理出站（只添加不在入站中的 IP）
-        if [ -n "$OUTBOUND_DATA" ]; then
-            while read -r ip pkts bytes; do
-                if ! echo "$INBOUND_DATA" | grep -q "^$ip "; then
-                    echo "$ip 0 0 $pkts $bytes"
+    echo "$INBOUND_DATA" > "$INBOUND_FILE" 2>/dev/null || true
+    echo "$OUTBOUND_DATA" > "$OUTBOUND_FILE" 2>/dev/null || true
+    
+    # 合并数据：以入站为主，匹配出站
+    if [ -s "$INBOUND_FILE" ]; then
+        while read -r ip in_pkts in_bytes; do
+            out_pkts=0
+            out_bytes=0
+            if [ -n "$ip" ]; then
+                out_line=$(grep "^$ip " "$OUTBOUND_FILE" 2>/dev/null || true)
+                if [ -n "$out_line" ]; then
+                    out_pkts=$(echo "$out_line" | awk '{print $2}')
+                    out_bytes=$(echo "$out_line" | awk '{print $3}')
                 fi
-            done <<< "$OUTBOUND_DATA"
-        fi > /tmp/tg_outbound_only.txt
-        TRAFFIC_DATA=$(cat /tmp/tg_outbound_only.txt 2>/dev/null || true)
-        rm -f /tmp/tg_outbound_only.txt
+                echo "$ip ${in_pkts:-0} ${in_bytes:-0} ${out_pkts:-0} ${out_bytes:-0}"
+            fi
+        done < "$INBOUND_FILE" > "$MERGED_FILE" 2>/dev/null || true
     fi
+    
+    # 添加仅在出站中出现的 IP
+    if [ -s "$OUTBOUND_FILE" ]; then
+        while read -r ip out_pkts out_bytes; do
+            if [ -n "$ip" ] && ! grep -q "^$ip " "$MERGED_FILE" 2>/dev/null; then
+                echo "$ip 0 0 ${out_pkts:-0} ${out_bytes:-0}"
+            fi
+        done < "$OUTBOUND_FILE" >> "$MERGED_FILE" 2>/dev/null || true
+    fi
+    
+    if [ -s "$MERGED_FILE" ]; then
+        TRAFFIC_DATA=$(cat "$MERGED_FILE")
+    fi
+    
+    rm -rf "$TMPDIR_STATS" 2>/dev/null || true
 fi
 
 # 验证数据格式

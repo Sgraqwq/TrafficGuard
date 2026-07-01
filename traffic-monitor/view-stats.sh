@@ -152,6 +152,8 @@ show_realtime() {
     
     # 合并并显示（使用临时文件）
     TMPDIR=$(mktemp -d 2>/dev/null || echo "/tmp")
+    # 确保异常退出时也清理临时目录
+    trap "rm -rf '$TMPDIR'" EXIT
     INBOUND_FILE="$TMPDIR/tg_inbound.txt"
     OUTBOUND_FILE="$TMPDIR/tg_outbound.txt"
     MERGED_FILE="$TMPDIR/tg_merged.txt"
@@ -196,6 +198,7 @@ show_realtime() {
     
     # 清理临时文件
     rm -rf "$TMPDIR" 2>/dev/null || true
+    trap - EXIT
     
     echo
 }

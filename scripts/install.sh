@@ -131,22 +131,14 @@ ensure_cmd() {
 }
 
 # ── 下载辅助函数
-# 优先从本地相对路径复制，不存在时再去远程下载
+# 始终从远程下载最新版本
 dl_or_copy() {
     local rel_path="$1" dst="$2"
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || true)"
-    # 安装脚本通常在 scripts/ 目录下，所以项目根目录是上级目录
-    local local_file="$(dirname "$script_dir")/$rel_path"
 
     mkdir -p "$(dirname "$dst")" || error "创建目录失败: $(dirname "$dst")"
 
-    if [ -n "$script_dir" ] && [ -f "$local_file" ]; then
-        cp "$local_file" "$dst" || error "复制本地文件失败: $local_file"
-    else
-        local url="$TG_RAW/$rel_path"
-        curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
-    fi
+    local url="$TG_RAW/$rel_path"
+    curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
 }
 
 dl() {
@@ -456,9 +448,13 @@ if [ "$FW_BACKEND" = "nftables" ]; then
         nft add set ip trafficguard whitelist '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
             warn "创建 nftables 白名单 set 失败"
     fi
-    # 自动加入管理员 IP
+    # 自动加入管理员 IP（幂等：先检查是否已存在）
     if [ "$ADD_WHITELIST" = "y" ] && [ -n "$ADMIN_IP" ]; then
-        nft add element ip trafficguard whitelist { "$ADMIN_IP" } 2>/dev/null || warn "添加管理员 IP 到白名单失败"
+        if ! nft list set ip trafficguard whitelist 2>/dev/null | grep -qE "(^|[^0-9.])${ADMIN_IP//./\\.}([^0-9.]|$)"; then
+            nft add element ip trafficguard whitelist { "$ADMIN_IP" } 2>/dev/null || warn "添加管理员 IP 到白名单失败"
+        else
+            info "管理员 IP $ADMIN_IP 已在白名单中"
+        fi
     fi
     RULE_WHITELIST="ip saddr @whitelist accept"
     if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_WHITELIST"; then
