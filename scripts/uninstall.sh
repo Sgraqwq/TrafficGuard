@@ -39,13 +39,23 @@ info "开始纯净卸载..."
 # 1. 停止定时任务
 info "[-] 清理定时任务..."
 if command -v crontab >/dev/null 2>&1; then
-    crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | grep -v 'tgctl restore' | crontab - || true
+    old_crontab=$(crontab -l 2>/dev/null || true)
+    if [ -n "$old_crontab" ]; then
+        new_crontab=$(echo "$old_crontab" | grep -v 'traffic-save-stats' | grep -v 'tgctl restore' | grep -v 'tg-cleanup-stats' || true)
+        if [ -n "$new_crontab" ]; then
+            echo "$new_crontab" | crontab - 2>/dev/null || true
+        else
+            crontab -r 2>/dev/null || true
+        fi
+    fi
 fi
 
 # 2. 停止 Fail2Ban
 info "[-] 停止 Fail2Ban 服务..."
 if command -v systemctl >/dev/null 2>&1; then
     systemctl stop fail2ban >/dev/null 2>&1 || true
+elif command -v rc-service >/dev/null 2>&1; then
+    rc-service fail2ban stop >/dev/null 2>&1 || true
 else
     service fail2ban stop >/dev/null 2>&1 || true
 fi
@@ -72,6 +82,8 @@ fi
 # 尝试重启 Fail2Ban 以恢复干净状态
 if command -v systemctl >/dev/null 2>&1; then
     systemctl start fail2ban >/dev/null 2>&1 || true
+elif command -v rc-service >/dev/null 2>&1; then
+    rc-service fail2ban start >/dev/null 2>&1 || true
 else
     service fail2ban start >/dev/null 2>&1 || true
 fi
@@ -87,6 +99,14 @@ info "[-] 删除本地脚本..."
 rm -f /usr/local/bin/traffic-save-stats
 rm -f /usr/local/bin/traffic-view-stats
 rm -f /usr/local/bin/tgctl
+rm -f /usr/bin/tgctl
+rm -f /etc/logrotate.d/trafficguard
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable trafficguard-restore.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/trafficguard-restore.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

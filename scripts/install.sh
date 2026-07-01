@@ -104,11 +104,18 @@ info "包管理器: $PKG_MGR"
 echo ""
 
 # ── 安装辅助函数 
+_APT_UPDATED=0
 install_pkg() {
     local pkg=$1
     info "安装 $pkg"
     case "$PKG_MGR" in
-        apt-get|apt)  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" ;;
+        apt-get|apt)  
+            if [ "$_APT_UPDATED" -eq 0 ]; then
+                apt-get update -qq
+                _APT_UPDATED=1
+            fi
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" 
+            ;;
         dnf)          dnf install -y -q "$pkg" ;;
         yum)          yum install -y -q "$pkg" ;;
         zypper)       zypper install -y "$pkg" ;;
@@ -220,7 +227,7 @@ elif [ -t 0 ] || [ -c /dev/tty ]; then
         echo -n "请输入需要防护的 SSH 端口 [默认 22]: "
     fi
     read input_port < /dev/tty || true
-    if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
+    if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
         SSH_PORT="$input_port"
     elif [ -n "$EXISTING_SSH_PORT" ]; then
         SSH_PORT="$EXISTING_SSH_PORT"
@@ -360,8 +367,8 @@ if service_is_active fail2ban "$INIT_SYSTEM"; then
     if [ "${TG_IS_UPDATE:-0}" -eq 1 ]; then
         info "Fail2Ban 已经在运行，更新模式下跳过重启以维持防护连贯"
     else
-        if service_control restart fail2ban "$INIT_SYSTEM"; then
-            info "Fail2Ban 已重启"
+        if service_control reload fail2ban "$INIT_SYSTEM" 2>/dev/null || service_control restart fail2ban "$INIT_SYSTEM"; then
+            info "Fail2Ban 已重载/重启"
         else
             warn "Fail2Ban 重启失败，尝试手动启动..."
             service_control start fail2ban "$INIT_SYSTEM" || {
@@ -413,20 +420,48 @@ mkdir -p /var/lib/trafficguard/stats || warn "创建 /var/lib/trafficguard/stats
 mkdir -p /var/log/trafficguard || warn "创建 /var/log/trafficguard 失败"
 info "目录已创建"
 
-# ── 7. 定时任务 
-info "设置定时任务（每小时统计 + 开机自动恢复 + 每日清理旧数据）"
-new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tgctl restore" | grep -v "tg-cleanup-stats" || true)
+# ── 7. 开机自动恢复配置 (systemd 或 crontab)
+info "设置开机自动恢复规则"
+if command -v systemctl >/dev/null 2>&1; then
+    cat << 'EOF' > /etc/systemd/system/trafficguard-restore.service
+[Unit]
+Description=TrafficGuard Restore Rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tgctl restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable trafficguard-restore.service >/dev/null 2>&1 || true
+    info "已通过 systemd 设置开机恢复 (trafficguard-restore.service)"
+    # 清理可能残留的 crontab @reboot
+    crontab -l 2>/dev/null | grep -v 'tgctl restore' | crontab - 2>/dev/null || true
+else
+    new_crontab=$(crontab -l 2>/dev/null | grep -v "tgctl restore" || true)
+    if { echo "$new_crontab"; echo "@reboot /usr/local/bin/tgctl restore"; } | crontab - 2>/dev/null; then
+        info "已通过 crontab @reboot 设置开机恢复"
+    else
+        warn "开机恢复设置失败，请手动添加: @reboot /usr/local/bin/tgctl restore"
+    fi
+fi
+
+# ── 8. 定时任务 (流量统计)
+info "设置定时任务（每小时统计 + 每日清理旧数据）"
+new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tg-cleanup-stats" || true)
 if {
     echo "$new_crontab"
     echo "0 * * * * /usr/local/bin/traffic-save-stats"
-    echo "@reboot /usr/local/bin/tgctl restore"
     echo "0 0 * * * find /var/lib/trafficguard/stats -name 'traffic_*.log' -mtime +90 -delete 2>/dev/null || true"
 } | crontab - 2>/dev/null; then
-    info "定时任务已设置（每小时统计 + 开机自动恢复规则 + 每日清理 90 天前旧数据）"
+    info "定时任务已设置"
 else
     warn "定时任务设置失败，请手动添加:"
     warn "  0 * * * * /usr/local/bin/traffic-save-stats"
-    warn "  @reboot /usr/local/bin/tgctl restore"
 fi
 
 # ── 8. 日志轮转配置 
@@ -579,10 +614,10 @@ echo ""
 
 # 如果在交互式终端中，安装完成后自动启动管理台
 # 热更新模式下跳过（由 tgctl check_update 自行 exec 重载）
-if [ "${TG_IS_UPDATE:-0}" -eq 0 ] && ([ -t 0 ] || [ -c /dev/tty ]); then
+if [ "${TG_IS_UPDATE:-0}" -eq 0 ] && [ -t 0 ]; then
     if command -v tgctl >/dev/null 2>&1; then
-        exec tgctl < /dev/tty
+        exec tgctl
     else
-        exec /usr/local/bin/tgctl < /dev/tty
+        exec /usr/local/bin/tgctl
     fi
 fi
