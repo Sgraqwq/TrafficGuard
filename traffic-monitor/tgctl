@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.2.9"
+TG_VERSION="1.2.10"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -403,12 +403,27 @@ uninstall_trafficguard() {
     # 1. 停止定时任务
     echo -e "[-] 清理定时任务..."
     if command -v crontab >/dev/null 2>&1; then
-        crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | grep -v 'tgctl restore' | crontab - || true
+        local old_crontab new_crontab
+        old_crontab=$(crontab -l 2>/dev/null || true)
+        if [ -n "$old_crontab" ]; then
+            new_crontab=$(echo "$old_crontab" | grep -v 'traffic-save-stats' | grep -v 'tgctl restore' | grep -v 'tg-cleanup-stats' || true)
+            if [ -n "$new_crontab" ]; then
+                echo "$new_crontab" | crontab - 2>/dev/null || true
+            else
+                crontab -r 2>/dev/null || true
+            fi
+        fi
     fi
 
     # 2. 停止 Fail2Ban
     echo -e "[-] 停止 Fail2Ban 服务..."
-    service_control stop fail2ban >/dev/null 2>&1 || true
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop fail2ban >/dev/null 2>&1 || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service fail2ban stop >/dev/null 2>&1 || true
+    else
+        service fail2ban stop >/dev/null 2>&1 || true
+    fi
     
     # 3. 删除 nftables 表
     echo -e "[-] 删除 nftables 规则..."
@@ -425,7 +440,13 @@ uninstall_trafficguard() {
         sed -i '/\[nginx-limit-conn\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
     fi
     # 尝试重启 Fail2Ban 以恢复干净状态
-    service_control start fail2ban >/dev/null 2>&1 || true
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl start fail2ban >/dev/null 2>&1 || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service fail2ban start >/dev/null 2>&1 || true
+    else
+        service fail2ban start >/dev/null 2>&1 || true
+    fi
 
     # 5. 清理配置、数据和日志
     echo -e "[-] 删除配置、数据和日志目录..."
@@ -433,10 +454,18 @@ uninstall_trafficguard() {
     rm -rf /var/lib/trafficguard
     rm -rf /var/log/trafficguard
 
-    # 6. 删除脚本
-    echo -e "[-] 删除本地脚本..."
+    # 6. 删除脚本和其他配置
+    echo -e "[-] 删除本地脚本和残留配置..."
     rm -f /usr/local/bin/traffic-save-stats
     rm -f /usr/local/bin/traffic-view-stats
+    rm -f /usr/bin/tgctl
+    rm -f /etc/logrotate.d/trafficguard
+    
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable trafficguard-restore.service >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/trafficguard-restore.service
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
     
     echo
     echo -e "${GREEN}========================================${NC}"
@@ -1048,12 +1077,18 @@ service_management() {
         2) service_control stop fail2ban && echo -e "${GREEN}Fail2Ban 已停止${NC}" ;;
         3) service_control restart fail2ban && echo -e "${GREEN}Fail2Ban 已重启${NC}" ;;
         4)
-            service_control enable fail2ban
-            echo -e "${GREEN}已启用开机启动${NC}"
+            if service_control enable fail2ban "$INIT_SYSTEM"; then
+                echo -e "${GREEN}已启用开机启动${NC}"
+            else
+                echo -e "${RED}操作失败${NC}"
+            fi
             ;;
         5)
-            service_control disable fail2ban
-            echo -e "${GREEN}已禁用开机启动${NC}"
+            if service_control disable fail2ban "$INIT_SYSTEM"; then
+                echo -e "${GREEN}已禁用开机启动${NC}"
+            else
+                echo -e "${RED}操作失败${NC}"
+            fi
             ;;
         6)
             return
@@ -1079,7 +1114,9 @@ show_usage() {
     echo "  ssh           SSH 防护"
     echo "  config        配置管理"
     echo "  service       服务管理"
+    echo "  whitelist     白名单管理"
     echo "  update        检查并更新 TrafficGuard"
+    echo "  uninstall     完全卸载 TrafficGuard"
     echo "  restore       恢复防火墙规则和 IP 列表（开机自动执行）"
     echo "  version       显示当前版本"
     echo "  help          显示此帮助信息"
@@ -1186,7 +1223,13 @@ check_update() {
     
     # 下载最新安装脚本
     local tmp_script
-    tmp_script=$(mktemp /tmp/tg_install_XXXXXX.sh)
+    tmp_script=$(mktemp /tmp/tg_install_XXXXXX.sh) || {
+        echo -e "${RED}创建临时文件失败${NC}"
+        echo
+        echo -e "${YELLOW}按回车继续...${NC}"
+        read -r _ </dev/tty || true
+        return 1
+    }
     
     if ! curl -fsSL --connect-timeout 10 --max-time 60 "${TG_REPO}/raw/main/scripts/install.sh" -o "$tmp_script" 2>/dev/null; then
         echo -e "${RED}下载安装脚本失败${NC}"
@@ -1205,7 +1248,7 @@ check_update() {
     
     # 执行安装脚本 (热更新模式)
     chmod +x "$tmp_script"
-    if sudo bash "$tmp_script"; then
+    if bash "$tmp_script"; then
         rm -f "$tmp_script"
         echo
         echo -e "${GREEN}更新成功！正在重新加载管理台...${NC}"
@@ -1255,7 +1298,9 @@ main() {
             ssh)      ssh_protection ;;
             config)   config_management ;;
             service)  service_management ;;
+            whitelist) whitelist_management ;;
             update)   check_update ;;
+            uninstall) uninstall_trafficguard ;;
             restore)  restore_nft_rules ;;
             version)
                 echo -e "TrafficGuard 版本: ${GREEN}$TG_VERSION${NC}"

@@ -464,7 +464,7 @@ else
     warn "  0 * * * * /usr/local/bin/traffic-save-stats"
 fi
 
-# ── 8. 日志轮转配置 
+# ── 9. 日志轮转配置 
 if [ -d /etc/logrotate.d ]; then
     dl_chmod "scripts/trafficguard.logrotate" /etc/logrotate.d/trafficguard
     info "日志轮转配置已安装 (/etc/logrotate.d/trafficguard)"
@@ -472,7 +472,7 @@ else
     warn "未找到 /etc/logrotate.d，跳过日志轮转配置"
 fi
 
-# ── 8. nftables 流量统计与纯网络层限流 (幂等创建) 
+# ── 10. nftables 流量统计与纯网络层限流 (幂等创建) 
 info "创建 nftables 底层防护与流量统计规则"
 if [ "$FW_BACKEND" = "nftables" ]; then
     nft_create_table_safe trafficguard
