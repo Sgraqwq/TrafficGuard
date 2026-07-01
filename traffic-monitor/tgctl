@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.0.6"
+TG_VERSION="1.0.7"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -185,7 +185,7 @@ whitelist_management() {
     esac
     
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 11. 完全卸载
@@ -312,7 +312,7 @@ show_status() {
     
     echo
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 2. 查看封禁列表
@@ -345,7 +345,7 @@ show_ban_list() {
     done
     
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 3. 封禁 IP
@@ -470,7 +470,7 @@ unban_ip() {
     
     echo
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 5. 查看流量统计（实时）
@@ -577,7 +577,7 @@ show_traffic() {
     
     echo
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 6. 查看历史流量
@@ -621,7 +621,7 @@ show_history_traffic() {
     
     echo
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 6. SSH 防护
@@ -674,7 +674,7 @@ ssh_protection() {
             grep "Failed password" /var/log/auth.log 2>/dev/null | tail -10 || echo "无法读取日志"
             echo
             echo -e "${YELLOW}按回车返回...${NC}"
-            read || true
+            read -r _ </dev/tty || true
             ;;
         2)
             echo
@@ -690,7 +690,7 @@ ssh_protection() {
             fi
             echo
             echo -e "${YELLOW}按回车返回...${NC}"
-            read || true
+            read -r _ </dev/tty || true
             ;;
         3)
             return
@@ -698,7 +698,7 @@ ssh_protection() {
         *)
             echo -e "${RED}无效选择${NC}"
             echo -e "${YELLOW}按回车返回...${NC}"
-            read || true
+            read -r _ </dev/tty || true
             ;;
     esac
 }
@@ -809,7 +809,7 @@ config_management() {
     esac
     
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 8. 服务管理
@@ -851,7 +851,7 @@ service_management() {
     esac
     
     echo -e "${YELLOW}按回车继续...${NC}"
-    read || true
+    read -r _ </dev/tty || true
 }
 
 # 显示 CLI 用法
@@ -941,7 +941,7 @@ check_update() {
         echo -e "${GREEN}✓ 已是最新版本${NC}"
         echo
         echo -e "${YELLOW}按回车继续...${NC}"
-        read || true
+        read -r _ </dev/tty || true
         return 0
     fi
     
@@ -957,7 +957,7 @@ check_update() {
         echo -e "${YELLOW}已取消更新${NC}"
         echo
         echo -e "${YELLOW}按回车继续...${NC}"
-        read || true
+        read -r _ </dev/tty || true
         return 0
     fi
     
@@ -973,7 +973,7 @@ check_update() {
         rm -f "$tmp_script"
         echo
         echo -e "${YELLOW}按回车继续...${NC}"
-        read || true
+        read -r _ </dev/tty || true
         return 1
     fi
     
