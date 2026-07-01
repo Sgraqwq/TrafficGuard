@@ -48,8 +48,8 @@ show_date_traffic() {
         return
     fi
     
-    echo -e "${BOLD}时间戳                 IP 地址              数据包            字节数${NC}"
-    echo "--------------------------------------------------------------------"
+    echo -e "${BOLD}时间戳                 IP 地址              入站数据包      入站字节数      出站数据包      出站字节数${NC}"
+    echo "----------------------------------------------------------------------------------------------------"
     
     # 解析并显示数据
     awk '
@@ -59,8 +59,8 @@ show_date_traffic() {
         next
     }
     /^[0-9]/ {
-        # 数据行：IP packets bytes
-        printf "%-23s %-18s %-15s %-15s\n", timestamp, $1, $2, ($3 ? $3 : "N/A")
+        # 数据行：IP in_pkts in_bytes out_pkts out_bytes
+        printf "%-23s %-18s %-15s %-15s %-15s %-15s\n", timestamp, $1, ($2 ? $2 : "0"), ($3 ? $3 : "0"), ($4 ? $4 : "0"), ($5 ? $5 : "0")
     }
     ' "$stats_file"
     
@@ -111,16 +111,20 @@ show_realtime() {
     fi
     
     # 检查 nftables set
-    if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
-        echo -e "${YELLOW}nftables set 'per_ip_traffic' 不存在${NC}"
+    if ! nft list set ip trafficguard inbound_traffic >/dev/null 2>&1; then
+        echo -e "${YELLOW}nftables set 'inbound_traffic' 不存在${NC}"
+        return
+    fi
+    if ! nft list set ip trafficguard outbound_traffic >/dev/null 2>&1; then
+        echo -e "${YELLOW}nftables set 'outbound_traffic' 不存在${NC}"
         return
     fi
     
-    echo -e "${BOLD}IP 地址              数据包            字节数${NC}"
-    echo "----------------------------------------------------"
+    echo -e "${BOLD}IP 地址              入站数据包      入站字节数      出站数据包      出站字节数${NC}"
+    echo "----------------------------------------------------------------------------------------"
     
-    # 获取当前流量（从动态 set 解析 per-IP 计数）
-    nft list set ip trafficguard per_ip_traffic 2>/dev/null | \
+    # 获取入站流量
+    INBOUND=$(nft list set ip trafficguard inbound_traffic 2>/dev/null | \
     grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ counter packets [0-9]+ bytes [0-9]+' 2>/dev/null | \
     awk '{
         ip = $1
@@ -128,8 +132,60 @@ show_realtime() {
             if($i == "packets") packets = $(i+1)
             if($i == "bytes") bytes = $(i+1)
         }
-        if(ip != "") printf "%-20s %-15s %-15s\n", ip, packets, (bytes ? bytes : "0")
-    }' | sort -k3 -rn | head -20 || true
+        if(ip != "") printf "%s %s %s\n", ip, packets, (bytes ? bytes : "0")
+    }' || true)
+    
+    # 获取出站流量
+    OUTBOUND=$(nft list set ip trafficguard outbound_traffic 2>/dev/null | \
+    grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ counter packets [0-9]+ bytes [0-9]+' 2>/dev/null | \
+    awk '{
+        ip = $1
+        for(i = 1; i <= NF; i++) {
+            if($i == "packets") packets = $(i+1)
+            if($i == "bytes") bytes = $(i+1)
+        }
+        if(ip != "") printf "%s %s %s\n", ip, packets, (bytes ? bytes : "0")
+    }' || true)
+    
+    # 合并并显示（使用临时文件）
+    TMPDIR=$(mktemp -d 2>/dev/null || echo "/tmp")
+    INBOUND_FILE="$TMPDIR/tg_inbound.txt"
+    OUTBOUND_FILE="$TMPDIR/tg_outbound.txt"
+    MERGED_FILE="$TMPDIR/tg_merged.txt"
+    
+    echo "$INBOUND" > "$INBOUND_FILE" 2>/dev/null || true
+    echo "$OUTBOUND" > "$OUTBOUND_FILE" 2>/dev/null || true
+    
+    # 合并数据
+    while read -r ip in_pkts in_bytes; do
+        out_pkts=0
+        out_bytes=0
+        if [ -n "$ip" ]; then
+            out_line=$(grep "^$ip " "$OUTBOUND_FILE" 2>/dev/null || true)
+            if [ -n "$out_line" ]; then
+                out_pkts=$(echo "$out_line" | awk '{print $2}')
+                out_bytes=$(echo "$out_line" | awk '{print $3}')
+            fi
+            echo "$ip $in_pkts $in_bytes ${out_pkts:-0} ${out_bytes:-0}"
+        fi
+    done < "$INBOUND_FILE" > "$MERGED_FILE" 2>/dev/null || true
+    
+    # 添加仅在出站中出现的 IP
+    while read -r ip out_pkts out_bytes; do
+        if [ -n "$ip" ] && ! grep -q "^$ip " "$MERGED_FILE" 2>/dev/null; then
+            echo "$ip 0 0 $out_pkts $out_bytes"
+        fi
+    done < "$OUTBOUND_FILE" >> "$MERGED_FILE" 2>/dev/null || true
+    
+    # 显示结果
+    if [ -s "$MERGED_FILE" ]; then
+        sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
+            printf "%-20s %-15s %-15s %-15s %-15s\n" "$ip" "$in_pkts" "$in_bytes" "$out_pkts" "$out_bytes"
+        done
+    fi
+    
+    # 清理临时文件
+    rm -rf "$TMPDIR" 2>/dev/null || true
     
     echo
 }

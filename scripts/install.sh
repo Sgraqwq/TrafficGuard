@@ -413,17 +413,29 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             warn "创建 nftables 链 'TRAFFICGUARD' 失败"
     fi
 
-    # === 1. 流量统计集合 ===
-    if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
-        nft add set ip trafficguard per_ip_traffic \
+    # === 1. 流量统计集合（入站/出站分别统计） ===
+    # 入站流量统计（外部 IP 访问本机）
+    if ! nft list set ip trafficguard inbound_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard inbound_traffic \
             '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
-            warn "创建 nftables 流量统计 set 失败"
+            warn "创建 nftables 入站流量统计 set 失败"
+    fi
+    # 出站流量统计（本机访问外部 IP）
+    if ! nft list set ip trafficguard outbound_traffic >/dev/null 2>&1; then
+        nft add set ip trafficguard outbound_traffic \
+            '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
+            warn "创建 nftables 出站流量统计 set 失败"
     fi
     # 添加统计规则
-    RULE_CHECK_STR="add @per_ip_traffic { ip saddr counter }"
-    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_CHECK_STR"; then
-        nft add rule ip trafficguard TRAFFICGUARD "$RULE_CHECK_STR" 2>/dev/null || \
-            warn "添加 nftables 流量统计规则失败"
+    RULE_INBOUND="add @inbound_traffic { ip daddr counter }"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_INBOUND"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_INBOUND" 2>/dev/null || \
+            warn "添加 nftables 入站流量统计规则失败"
+    fi
+    RULE_OUTBOUND="add @outbound_traffic { ip saddr counter }"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_OUTBOUND"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_OUTBOUND" 2>/dev/null || \
+            warn "添加 nftables 出站流量统计规则失败"
     fi
 
     # === 2. 白名单集合 ===
