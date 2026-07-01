@@ -160,17 +160,16 @@ if [ -n "$TRAFFIC_DATA" ]; then
             WHITELIST=$(nft list set ip trafficguard whitelist 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
         fi
         
-        # 读取今日已记录的历史快照，计算本次增量
-        # 今日统计文件中的最后一次记录作为基准
-        PREV_SNAPSHOT=""
+        # 取今日基线：每个 IP 在今天日志中的第一条记录（最小值 in_bytes）
+        # 用"当前计数器值 - 基线值"算今日累计流量，而非小时增量
+        BASELINE=""
         if [ -f "$STATS_FILE" ]; then
-            # 找到今天文件中每个 IP 的最大 in_bytes（最近一次记录）
-            PREV_SNAPSHOT=$(awk '/^[0-9]/{
-                if (!seen[$1] || $3 > max_bytes[$1]) {
-                    seen[$1] = 1; max_bytes[$1] = $3
+            BASELINE=$(awk '/^[0-9]/{
+                if (!($1 in min_bytes) || $3 < min_bytes[$1]) {
+                    min_bytes[$1] = $3
                 }
             } END {
-                for (ip in max_bytes) printf "%s %s\n", ip, max_bytes[ip]
+                for (ip in min_bytes) printf "%s %s\n", ip, min_bytes[ip]
             }' "$STATS_FILE" 2>/dev/null || true)
         fi
         
@@ -180,19 +179,26 @@ if [ -n "$TRAFFIC_DATA" ]; then
                 continue
             fi
             
-            # 计算今日增量（当前值 - 上次快照值）
-            prev_bytes=0
-            if [ -n "$PREV_SNAPSHOT" ]; then
-                prev_line=$(echo "$PREV_SNAPSHOT" | grep -F "$ip " | head -1 || true)
-                if [ -n "$prev_line" ]; then
-                    prev_bytes=$(echo "$prev_line" | awk '{print $2}')
-                    [[ "$prev_bytes" =~ ^[0-9]+$ ]] || prev_bytes=0
+            # 计算今日累计流量 = 当前值 - 今日基线
+            baseline_bytes=0
+            if [ -n "$BASELINE" ]; then
+                base_line=$(echo "$BASELINE" | grep -F "$ip " | head -1 || true)
+                if [ -n "$base_line" ]; then
+                    baseline_bytes=$(echo "$base_line" | awk '{print $2}')
+                    [[ "$baseline_bytes" =~ ^[0-9]+$ ]] || baseline_bytes=0
                 fi
             fi
-            delta_bytes=$(( in_bytes - prev_bytes ))
-            [ "$delta_bytes" -lt 0 ] && delta_bytes="$in_bytes"  # 计数器重置后差值为负，用绝对值
             
-            if [ "$delta_bytes" -gt "$LIMIT_BYTES" ]; then
+            if [ "$baseline_bytes" -gt 0 ]; then
+                # 已有基线：今日累计 = 当前值 - 基线
+                daily_total=$(( in_bytes - baseline_bytes ))
+                [ "$daily_total" -lt 0 ] && daily_total="$in_bytes"
+            else
+                # 今日首次运行，无基线 → 跳过检查，日志保存后下次就有基线了
+                daily_total=0
+            fi
+            
+            if [ "$daily_total" -gt "$LIMIT_BYTES" ]; then
                 # 检查是否在白名单中（精确匹配）
                 is_whitelisted=0
                 for w_ip in $WHITELIST; do
@@ -210,7 +216,7 @@ if [ -n "$TRAFFIC_DATA" ]; then
                     fi
                     
                     if [ "$is_banned" -eq 0 ]; then
-                        echo "[$NOW] [警告] IP $ip 今日入站流量超限 ($((delta_bytes/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
+                        echo "[$NOW] [警告] IP $ip 今日入站流量超限 ($((daily_total/1048576)) MB > $LIMIT_MB MB)，执行自动封禁！" >> "$LOG_FILE"
                         nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
                             echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
                         # 原子写入持久化黑名单（防止崩溃导致文件损坏）

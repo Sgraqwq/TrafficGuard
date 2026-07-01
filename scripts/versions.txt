@@ -1,0 +1,8 @@
+v1.3.0|核心自动封禁逻辑修复：修复午夜误杀(基线算法)、修复小时增量 vs 日限额不匹配、改为基线累计算法
+v1.2.10|tgctl 菜单与更新模块修复：mktemp 崩溃修复、内置卸载同步、去除多余 sudo、CLI 新增 whitelist/uninstall 命令
+v1.2.9|关键脚本崩溃修复：save-stats.sh local 变量崩溃修复、flock 双锁竞态修复、新增 output hook 出站流量统计
+v1.2.8|安装/卸载生命周期修复：OpenRC 支持、fail2ban reload 不丢封禁、apt update 只跑一次、SSH 端口范围校验、crontab 空覆盖修复、systemd + crontab 双保险开机恢复
+v1.2.7|持久化存储修复：原子写入(mktemp+mv)、flock 并发锁、logrotate 配置、规则顺序对齐
+v1.2.6|关键自动封禁修复：规则顺序修正(白名单→黑名单→统计)、日增量计算、quick_unban_ip jail 检查
+v1.2.5|外部审计修复：restore 绕过 fail2ban 检查、整数类型验证、TMPDIR 重命名、nginx jail 跳过
+v1.2.4|crontab pipefail 竞态修复、更新模式跳过 tgctl exec
