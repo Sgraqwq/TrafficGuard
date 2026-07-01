@@ -50,7 +50,6 @@ check_deps() {
 
 # 显示 Logo
 show_logo() {
-    clear
     echo -e "${CYAN}"
     echo "+================================================================+"
     echo "|                                                                |"
@@ -79,8 +78,73 @@ show_menu() {
     echo -e "  ${GREEN}7)${NC} SSH 防护"
     echo -e "  ${GREEN}8)${NC} 配置管理"
     echo -e "  ${GREEN}9)${NC} 服务管理"
+    echo -e "  ${GREEN}10)${NC} 卸载 TrafficGuard"
     echo -e "  ${GREEN}0)${NC} 退出"
     echo
+}
+
+# 10. 完全卸载
+uninstall_trafficguard() {
+    echo -e "${RED}========================================${NC}"
+    echo -e "${RED}    警告: 纯净卸载 TrafficGuard${NC}"
+    echo -e "${RED}========================================${NC}"
+    echo -e "${YELLOW}此操作将完全卸载 TrafficGuard，并删除所有数据（不留备份）。${NC}"
+    echo -e "${YELLOW}包含所有的历史流量日志、已被封禁的 IP 名单等，都会被永久销毁。${NC}"
+    echo
+    read -p "您确定要执行纯净卸载吗？[y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}已取消卸载操作。${NC}"
+        return
+    fi
+    echo
+    echo -e "${CYAN}开始纯净卸载...${NC}"
+    
+    # 1. 停止定时任务
+    echo -e "[-] 清理定时任务..."
+    if command -v crontab >/dev/null 2>&1; then
+        crontab -l 2>/dev/null | grep -v 'traffic-save-stats' | crontab - || true
+    fi
+
+    # 2. 停止 Fail2Ban
+    echo -e "[-] 停止 Fail2Ban 服务..."
+    systemctl stop fail2ban >/dev/null 2>&1 || true
+    
+    # 3. 删除 nftables 表
+    echo -e "[-] 删除 nftables 规则..."
+    if command -v nft >/dev/null 2>&1; then
+        nft delete table ip trafficguard >/dev/null 2>&1 || true
+    fi
+    
+    # 4. 清理 Fail2Ban 配置
+    echo -e "[-] 清理 Fail2Ban 配置与数据..."
+    rm -f /etc/fail2ban/jail.d/trafficguard.conf
+    # 清理残留的 jail.local 规则
+    if [ -f /etc/fail2ban/jail.local ]; then
+        sed -i '/\[nginx-limit-req\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
+        sed -i '/\[nginx-limit-conn\]/,/^$/d' /etc/fail2ban/jail.local 2>/dev/null || true
+    fi
+    # 尝试重启 Fail2Ban 以恢复干净状态
+    systemctl start fail2ban >/dev/null 2>&1 || true
+
+    # 5. 清理数据和日志
+    echo -e "[-] 删除数据和日志目录..."
+    rm -rf /var/lib/trafficguard
+    rm -rf /var/log/trafficguard
+
+    # 6. 删除脚本
+    echo -e "[-] 删除本地脚本..."
+    rm -f /usr/local/bin/traffic-save-stats
+    rm -f /usr/local/bin/traffic-view-stats
+    
+    echo
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    卸载完成！${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "TrafficGuard 的所有组件、规则和数据都已彻底清除。"
+    
+    # 最后删除自身
+    rm -f /usr/local/bin/tgctl
+    exit 0
 }
 
 # 1. 查看状态
@@ -107,11 +171,11 @@ show_status() {
     echo
     
     # nftables 状态
-    echo -e "${BOLD}nftables 状态 (核心防火墙):${NC}"
+    echo -e "${BOLD}nftables 状态 :${NC}"
     if command -v nft >/dev/null 2>&1 && nft list table ip trafficguard >/dev/null 2>&1; then
-        echo -e "  状态: ${GREEN}运行中 (已接管底层流量)${NC}"
+        echo -e "  状态: ${GREEN}运行中${NC}"
     else
-        echo -e "  状态: ${RED}未加载 (流量监控和防爆破不生效)${NC}"
+        echo -e "  状态: ${RED}未加载${NC}"
     fi
     
     echo
@@ -130,9 +194,7 @@ show_status() {
     # 获取 nftables 手动封禁数量
     local manual_banned=0
     if command -v nft >/dev/null 2>&1 && nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
-        manual_banned=$(nft list set ip trafficguard manual_banned 2>/dev/null | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l || echo "0")
-        # 去除可能包含的空格，确保它是纯数字
-        manual_banned=$(echo "$manual_banned" | tr -d ' ')
+        manual_banned=$(nft list set ip trafficguard manual_banned 2>/dev/null | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
     fi
     
     # 确保变量格式合法，避免因为空值或包含空格导致语法错误
@@ -640,7 +702,7 @@ main() {
         show_logo
         show_menu
         
-        read -p "请选择 [0-9]: " choice || { echo; echo -e "${GREEN}再见！${NC}"; exit 0; }
+        read -p "请选择 [0-9] 或 10: " choice || { echo; echo -e "${GREEN}再见！${NC}"; exit 0; }
         
         case $choice in
             1) show_status ;;
@@ -652,6 +714,7 @@ main() {
             7) ssh_protection ;;
             8) config_management ;;
             9) service_management ;;
+            10) uninstall_trafficguard ;;
             0)
                 echo -e "${GREEN}再见！${NC}"
                 exit 0
