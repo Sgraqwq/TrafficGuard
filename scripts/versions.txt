@@ -1,3 +1,6 @@
+v1.3.3|修复逃逸漏洞：潜水 IP 历史记录保留，unset+遗留数组遍历防止计数器重置后丢配额
+v1.3.2|修复 state file 写入崩溃：移除函数外 local 关键字
+v1.3.1|状态文件追踪替代基线算法：引入 daily_usage.db 解耦 cumulative 和 raw counter
 v1.3.0|核心自动封禁逻辑修复：修复午夜误杀(基线算法)、修复小时增量 vs 日限额不匹配、改为基线累计算法
 v1.2.10|tgctl 菜单与更新模块修复：mktemp 崩溃修复、内置卸载同步、去除多余 sudo、CLI 新增 whitelist/uninstall 命令
 v1.2.9|关键脚本崩溃修复：save-stats.sh local 变量崩溃修复、flock 双锁竞态修复、新增 output hook 出站流量统计
