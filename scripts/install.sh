@@ -14,8 +14,9 @@ set -euo pipefail
 # ── 环境变量 
 export DEBIAN_FRONTEND=noninteractive
 
-# ── 仓库地址 
+# ── 仓库地址及参数 
 TG_REPO="${TG_REPO:-https://github.com/Sgraqwq/TrafficGuard}"
+TG_BACKEND_PORT="${TG_BACKEND_PORT:-8080}"
 
 # URL 验证：防止恶意 URL 注入
 validate_tg_repo() {
@@ -208,8 +209,8 @@ write_file_atomic "$NGINX_CONF_DIR/trafficguard.conf" <<'NGINX_CONF'
 # 连接限制：每 IP 最多 100 并发连接
 limit_conn_zone $binary_remote_addr zone=perip:10m;
 
-# 速率限制：每 IP 每秒 10 个请求
-limit_req_zone $binary_remote_addr zone=req_limit:10m rate=10r/s;
+# 速率限制：放宽至每 IP 每秒 50 个请求（兼容代理服务器流量爆发）
+limit_req_zone $binary_remote_addr zone=req_limit:10m rate=50r/s;
 
 # 超过限制时返回 429 (Too Many Requests)
 limit_req_status 429;
@@ -223,10 +224,13 @@ server {
     limit_conn perip 100;
 
     # 应用速率限制
-    limit_req zone=req_limit burst=20 nodelay;
+    limit_req zone=req_limit burst=100 nodelay;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:__TG_BACKEND_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -240,6 +244,9 @@ server {
     }
 }
 NGINX_CONF
+
+# 替换动态端口
+sed -i "s/__TG_BACKEND_PORT__/$TG_BACKEND_PORT/g" "$NGINX_CONF_DIR/trafficguard.conf"
 
 # 测试 Nginx 配置并启动/重载
 if nginx -t 2>/dev/null; then
@@ -291,7 +298,8 @@ logpath = /var/log/nginx/error.log
 maxretry = 10
 findtime = 60
 bantime = 600
-action = nftables[type=multiport, name=nginx-limit-req, port="http,https", protocol=tcp]
+# 触发后执行全端口封禁，防止继续探测隐藏的代理端口
+action = nftables[type=allports]
 
 [nginx-limit-conn]
 enabled = true
@@ -301,7 +309,8 @@ logpath = /var/log/nginx/error.log
 maxretry = 5
 findtime = 60
 bantime = 1800
-action = nftables[type=multiport, name=nginx-limit-conn, port="http,https", protocol=tcp]
+# 触发后执行全端口封禁，防止继续探测隐藏的代理端口
+action = nftables[type=allports]
 
 [sshd]
 enabled = true
