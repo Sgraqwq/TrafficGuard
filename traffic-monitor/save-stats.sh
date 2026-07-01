@@ -237,7 +237,16 @@ if [ -n "$TRAFFIC_DATA" ]; then
             fi
             # 累积状态行（记入今日累计和当前原始值）
             NEW_STATE="${NEW_STATE}${ip}|${TODAY}|${cumulative}|${in_bytes}"$'\n'
+            # 从老记录中剔除已处理的 IP，剩下的是"潜水 IP"
+            unset "_ST_CUM[$ip]" "_ST_RAW[$ip]" "_ST_DATE[$ip]"
         done <<< "$TRAFFIC_DATA"
+        
+        # 保留状态文件中存在但当前不活跃的"潜水 IP"（防止计数器重置后丢记录）
+        for _old_ip in "${!_ST_CUM[@]}"; do
+            if [ "${_ST_DATE["$_old_ip"]}" = "$TODAY" ]; then
+                NEW_STATE="${NEW_STATE}${_old_ip}|${_ST_DATE["$_old_ip"]}|${_ST_CUM["$_old_ip"]}|${_ST_RAW["$_old_ip"]}"$'\n'
+            fi
+        done
         
         # 原子写入状态文件
         if [ -n "$NEW_STATE" ]; then
