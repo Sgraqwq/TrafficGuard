@@ -183,6 +183,9 @@ whitelist_management() {
             return
             ;;
     esac
+    
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 11. 完全卸载
@@ -308,6 +311,8 @@ show_status() {
     echo -e "  总计封禁: ${RED}${total_banned:-0}${NC} 个 IP"
     
     echo
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 2. 查看封禁列表
@@ -338,6 +343,9 @@ show_ban_list() {
             echo
         fi
     done
+    
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 3. 封禁 IP
@@ -459,6 +467,10 @@ unban_ip() {
             echo -e "${YELLOW}解封失败/未被封禁: $ip (SSH 防护)${NC}"
         fi
     fi
+    
+    echo
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 5. 查看流量统计（实时）
@@ -602,6 +614,10 @@ show_history_traffic() {
             echo -e "${RED}无效选择${NC}"
             ;;
     esac
+    
+    echo
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 6. SSH 防护
@@ -787,6 +803,9 @@ config_management() {
             return
             ;;
     esac
+    
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 8. 服务管理
@@ -826,6 +845,9 @@ service_management() {
             return
             ;;
     esac
+    
+    echo -e "${YELLOW}按回车继续...${NC}"
+    read || true
 }
 
 # 显示 CLI 用法
