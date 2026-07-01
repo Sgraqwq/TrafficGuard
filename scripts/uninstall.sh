@@ -70,9 +70,8 @@ fi
 info "[-] 清理 Fail2Ban 配置与数据..."
 rm -f /etc/fail2ban/jail.d/trafficguard.conf
 
-if [ -f /var/lib/fail2ban/fail2ban.sqlite3 ]; then
-    rm -f /var/lib/fail2ban/fail2ban.sqlite3 2>/dev/null || true
-fi
+# 注意：不删 fail2ban.sqlite3，该数据库为系统所有 jail 共享（包括用户自建的 SSH/Web 等规则），
+# 删除它会误伤非 TrafficGuard 的封禁历史。tgctl 内置卸载也不删此文件。
 
 # 尝试重启 Fail2Ban 以恢复干净状态
 if command -v systemctl >/dev/null 2>&1; then
