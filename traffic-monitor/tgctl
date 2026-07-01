@@ -648,8 +648,6 @@ ssh_protection() {
             echo -e "${BOLD}最近 SSH 失败登录:${NC}"
             grep "Failed password" /var/log/auth.log 2>/dev/null | tail -10 || echo "无法读取日志"
             echo
-            echo -e "${YELLOW}按回车返回...${NC}"
-            read || true
             ;;
         2)
             echo
@@ -663,17 +661,12 @@ ssh_protection() {
             else
                 echo -e "${RED}无效的 IP 地址${NC}"
             fi
-            echo
-            echo -e "${YELLOW}按回车返回...${NC}"
-            read || true
             ;;
         3)
             return
             ;;
         *)
             echo -e "${RED}无效选择${NC}"
-            echo -e "${YELLOW}按回车返回...${NC}"
-            read || true
             ;;
     esac
 }
