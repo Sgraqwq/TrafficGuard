@@ -106,6 +106,16 @@ show_status() {
     
     echo
     
+    # nftables 状态
+    echo -e "${BOLD}nftables 状态 (核心防火墙):${NC}"
+    if command -v nft >/dev/null 2>&1 && nft list table ip trafficguard >/dev/null 2>&1; then
+        echo -e "  状态: ${GREEN}运行中 (已接管底层流量)${NC}"
+    else
+        echo -e "  状态: ${RED}未加载 (流量监控和防爆破不生效)${NC}"
+    fi
+    
+    echo
+    
     # 封禁统计
     echo -e "${BOLD}封禁统计:${NC}"
     local total_banned=0
@@ -119,14 +129,18 @@ show_status() {
     
     # 获取 nftables 手动封禁数量
     local manual_banned=0
-    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
-        manual_banned=$(nft list set ip trafficguard manual_banned | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l || echo 0)
+    if command -v nft >/dev/null 2>&1 && nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        manual_banned=$(nft list set ip trafficguard manual_banned 2>/dev/null | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l || echo "0")
+        # 去除可能包含的空格，确保它是纯数字
+        manual_banned=$(echo "$manual_banned" | tr -d ' ')
     fi
-    total_banned=$((total_banned + manual_banned))
     
-    echo -e "  Fail2Ban 自动封禁: ${YELLOW}$((${total_banned} - ${manual_banned}))${NC} 个 IP"
-    echo -e "  nftables 手动黑名单: ${YELLOW}${manual_banned}${NC} 个 IP"
-    echo -e "  总计封禁: ${RED}$total_banned${NC} 个 IP"
+    # 确保变量格式合法，避免因为空值或包含空格导致语法错误
+    total_banned=$(( ${total_banned:-0} + ${manual_banned:-0} ))
+    
+    echo -e "  Fail2Ban 自动封禁: ${YELLOW}$((${total_banned:-0} - ${manual_banned:-0}))${NC} 个 IP"
+    echo -e "  nftables 手动黑名单: ${YELLOW}${manual_banned:-0}${NC} 个 IP"
+    echo -e "  总计封禁: ${RED}${total_banned:-0}${NC} 个 IP"
     
     echo
 }
