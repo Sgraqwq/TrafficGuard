@@ -38,9 +38,7 @@ check_deps() {
         missing+=("nftables")
     fi
     
-    if ! command -v nginx >/dev/null 2>&1; then
-        missing+=("nginx")
-    fi
+
     
     if [ ${#missing[@]} -gt 0 ]; then
         echo -e "${RED}错误: 缺少依赖${NC}"
@@ -108,23 +106,6 @@ show_status() {
     
     echo
     
-    # Nginx 状态
-    echo -e "${BOLD}Nginx 状态:${NC}"
-    if systemctl is-active --quiet nginx; then
-        echo -e "  状态: ${GREEN}运行中${NC}"
-    else
-        echo -e "  状态: ${RED}未运行${NC}"
-    fi
-    
-    # 检查配置
-    if [ -f /etc/nginx/conf.d/trafficguard.conf ]; then
-        echo -e "  配置: ${GREEN}已加载${NC}"
-    else
-        echo -e "  配置: ${YELLOW}未找到${NC}"
-    fi
-    
-    echo
-    
     # 封禁统计
     echo -e "${BOLD}封禁统计:${NC}"
     local total_banned=0
@@ -135,7 +116,17 @@ show_status() {
             total_banned=$((total_banned + ${banned:-0}))
         fi
     done
-    echo -e "  当前封禁: ${RED}$total_banned${NC} 个 IP"
+    
+    # 获取 nftables 手动封禁数量
+    local manual_banned=0
+    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        manual_banned=$(nft list set ip trafficguard manual_banned | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l || echo 0)
+    fi
+    total_banned=$((total_banned + manual_banned))
+    
+    echo -e "  Fail2Ban 自动封禁: ${YELLOW}$((${total_banned} - ${manual_banned}))${NC} 个 IP"
+    echo -e "  nftables 手动黑名单: ${YELLOW}${manual_banned}${NC} 个 IP"
+    echo -e "  总计封禁: ${RED}$total_banned${NC} 个 IP"
     
     echo
 }
@@ -147,10 +138,23 @@ show_ban_list() {
     echo -e "${CYAN}========================================${NC}"
     echo
     
+    echo -e "${BOLD}[nftables] 手动黑名单 (全局封禁):${NC}"
+    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        local manual_list=$(nft list set ip trafficguard manual_banned | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | xargs)
+        if [ -n "$manual_list" ]; then
+            echo "  IP 列表: $manual_list"
+        else
+            echo "  (空)"
+        fi
+    else
+        echo "  (未初始化)"
+    fi
+    echo
+    
     for jail in $(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' ' '); do
         jail=$(echo "$jail" | xargs)
         if [ -n "$jail" ]; then
-            echo -e "${BOLD}Jail: $jail${NC}"
+            echo -e "${BOLD}[Fail2Ban] Jail: $jail${NC}"
             fail2ban-client status "$jail" 2>/dev/null | grep -E "Currently banned|Total banned|Banned IP list" | sed 's/^/  /'
             echo
         fi
@@ -166,24 +170,11 @@ ban_ip() {
     
     # 选择 jail
     echo -e "${BOLD}选择要封禁的类型:${NC}"
-    echo "  1) 速率限制 (nginx-limit-req)"
-    echo "  2) 连接限制 (nginx-limit-conn)"
-    echo "  3) SSH 防护 (sshd)"
-    echo "  4) 全部"
+    echo "  1) 全局黑名单 (基于 nftables, 封禁所有端口)"
+    echo "  2) SSH 防护 (仅封禁 SSH 端口)"
+    echo "  3) 全部"
     echo
-    read -p "请选择 [1-4]: " choice || return
-    
-    local jails=()
-    case $choice in
-        1) jails=("nginx-limit-req") ;;
-        2) jails=("nginx-limit-conn") ;;
-        3) jails=("sshd") ;;
-        4) jails=("nginx-limit-req" "nginx-limit-conn" "sshd") ;;
-        *)
-            echo -e "${RED}无效选择${NC}"
-            return
-            ;;
-    esac
+    read -p "请选择 [1-3]: " choice || return
     
     # 输入 IP
     echo
@@ -204,13 +195,21 @@ ban_ip() {
     fi
     
     # 执行封禁
-    for jail in "${jails[@]}"; do
-        if fail2ban-client set "$jail" banip "$ip" 2>/dev/null; then
-            echo -e "${GREEN}已封禁 $ip (jail: $jail)${NC}"
+    if [[ "$choice" == "1" || "$choice" == "3" ]]; then
+        if nft add element ip trafficguard manual_banned "{ $ip }" 2>/dev/null; then
+            echo -e "${GREEN}已封禁 $ip (全局黑名单)${NC}"
         else
-            echo -e "${RED}封禁失败: $ip (jail: $jail)${NC}"
+            echo -e "${RED}封禁失败: $ip (全局黑名单)${NC}"
         fi
-    done
+    fi
+    
+    if [[ "$choice" == "2" || "$choice" == "3" ]]; then
+        if fail2ban-client set sshd banip "$ip" 2>/dev/null; then
+            echo -e "${GREEN}已封禁 $ip (SSH 防护)${NC}"
+        else
+            echo -e "${RED}封禁失败: $ip (SSH 防护)${NC}"
+        fi
+    fi
 }
 
 # 4. 解封 IP
@@ -222,12 +221,18 @@ unban_ip() {
     
     # 显示当前封禁列表
     echo -e "${BOLD}当前封禁列表:${NC}"
+    if nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        local manual_list=$(nft list set ip trafficguard manual_banned | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | xargs)
+        if [ -n "$manual_list" ]; then
+            echo "  [全局黑名单]: $manual_list"
+        fi
+    fi
     for jail in $(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' ' '); do
         jail=$(echo "$jail" | xargs)
         if [ -n "$jail" ]; then
             local banned=$(fail2ban-client status "$jail" 2>/dev/null | grep "Banned IP list" | cut -d: -f2 | xargs)
             if [ -n "$banned" ]; then
-                echo "  $jail: $banned"
+                echo "  [Fail2Ban - $jail]: $banned"
             fi
         fi
     done
@@ -235,24 +240,11 @@ unban_ip() {
     
     # 选择 jail
     echo -e "${BOLD}选择要解封的类型:${NC}"
-    echo "  1) 速率限制 (nginx-limit-req)"
-    echo "  2) 连接限制 (nginx-limit-conn)"
-    echo "  3) SSH 防护 (sshd)"
-    echo "  4) 全部"
+    echo "  1) 全局黑名单 (基于 nftables)"
+    echo "  2) SSH 防护 (sshd)"
+    echo "  3) 全部"
     echo
-    read -p "请选择 [1-4]: " choice || return
-    
-    local jails=()
-    case $choice in
-        1) jails=("nginx-limit-req") ;;
-        2) jails=("nginx-limit-conn") ;;
-        3) jails=("sshd") ;;
-        4) jails=("nginx-limit-req" "nginx-limit-conn" "sshd") ;;
-        *)
-            echo -e "${RED}无效选择${NC}"
-            return
-            ;;
-    esac
+    read -p "请选择 [1-3]: " choice || return
     
     # 输入 IP
     echo
@@ -273,13 +265,21 @@ unban_ip() {
     fi
     
     # 执行解封
-    for jail in "${jails[@]}"; do
-        if fail2ban-client set "$jail" unbanip "$ip" 2>/dev/null; then
-            echo -e "${GREEN}已解封 $ip (jail: $jail)${NC}"
+    if [[ "$choice" == "1" || "$choice" == "3" ]]; then
+        if nft delete element ip trafficguard manual_banned "{ $ip }" 2>/dev/null; then
+            echo -e "${GREEN}已解封 $ip (全局黑名单)${NC}"
         else
-            echo -e "${RED}解封失败: $ip (jail: $jail)${NC}"
+            echo -e "${YELLOW}解封失败/未被封禁: $ip (全局黑名单)${NC}"
         fi
-    done
+    fi
+    
+    if [[ "$choice" == "2" || "$choice" == "3" ]]; then
+        if fail2ban-client set sshd unbanip "$ip" 2>/dev/null; then
+            echo -e "${GREEN}已解封 $ip (SSH 防护)${NC}"
+        else
+            echo -e "${YELLOW}解封失败/未被封禁: $ip (SSH 防护)${NC}"
+        fi
+    fi
 }
 
 # 5. 查看流量统计（实时）
@@ -449,46 +449,26 @@ config_management() {
     echo
     
     echo -e "${BOLD}配置文件:${NC}"
-    echo "  1) Nginx 限制配置: /etc/nginx/conf.d/trafficguard.conf"
-    echo "  2) Fail2Ban 配置: /etc/fail2ban/jail.d/trafficguard.conf"
-    echo "  3) Fail2Ban Filter: /etc/fail2ban/filter.d/nginx-limit-*.conf"
+    echo -e "${BOLD}配置文件:${NC}"
+    echo "  1) Fail2Ban 配置: /etc/fail2ban/jail.d/trafficguard.conf"
     echo
     
     echo -e "${BOLD}操作:${NC}"
-    echo "  1) 查看 Nginx 配置"
-    echo "  2) 查看 Fail2Ban 配置"
-    echo "  3) 编辑 Nginx 配置"
-    echo "  4) 编辑 Fail2Ban 配置"
-    echo "  5) 测试 Nginx 配置"
-    echo "  6) 重载所有配置"
-    echo "  7) 返回主菜单"
+    echo "  1) 查看 Fail2Ban 配置"
+    echo "  2) 编辑 Fail2Ban 配置"
+    echo "  3) 重载配置"
+    echo "  4) 返回主菜单"
     echo
-    read -p "请选择 [1-7]: " choice || return
+    read -p "请选择 [1-4]: " choice || return
     
     case $choice in
         1)
-            echo
-            echo -e "${BOLD}Nginx 配置:${NC}"
-            cat /etc/nginx/conf.d/trafficguard.conf 2>/dev/null || echo "配置文件不存在"
-            echo
-            ;;
-        2)
             echo
             echo -e "${BOLD}Fail2Ban 配置:${NC}"
             cat /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || echo "配置不存在"
             echo
             ;;
-        3)
-            echo
-            if command -v nano >/dev/null 2>&1; then
-                nano /etc/nginx/conf.d/trafficguard.conf
-            elif command -v vi >/dev/null 2>&1; then
-                vi /etc/nginx/conf.d/trafficguard.conf
-            else
-                echo -e "${RED}未找到编辑器 (nano/vi)${NC}"
-            fi
-            ;;
-        4)
+        2)
             echo
             if command -v nano >/dev/null 2>&1; then
                 nano /etc/fail2ban/jail.d/trafficguard.conf
@@ -498,20 +478,14 @@ config_management() {
                 echo -e "${RED}未找到编辑器 (nano/vi)${NC}"
             fi
             ;;
-        5)
-            echo
-            nginx -t
-            echo
-            ;;
-        6)
+        3)
             echo
             echo -e "${BOLD}重载配置...${NC}"
-            nginx -t && systemctl reload nginx
             systemctl reload fail2ban
             echo -e "${GREEN}配置已重载${NC}"
             echo
             ;;
-        7)
+        4)
             return
             ;;
     esac
@@ -525,41 +499,32 @@ service_management() {
     echo
     
     echo -e "${BOLD}服务状态:${NC}"
-    echo "  Nginx:     $(systemctl is-active nginx 2>/dev/null || echo '未运行')"
     echo "  Fail2Ban:  $(systemctl is-active fail2ban 2>/dev/null || echo '未运行')"
     echo
     
     echo -e "${BOLD}操作:${NC}"
-    echo "  1) 启动 Nginx"
-    echo "  2) 停止 Nginx"
-    echo "  3) 重启 Nginx"
-    echo "  4) 启动 Fail2Ban"
-    echo "  5) 停止 Fail2Ban"
-    echo "  6) 重启 Fail2Ban"
-    echo "  7) 启用开机启动"
-    echo "  8) 禁用开机启动"
-    echo "  9) 返回主菜单"
+    echo "  1) 启动 Fail2Ban"
+    echo "  2) 停止 Fail2Ban"
+    echo "  3) 重启 Fail2Ban"
+    echo "  4) 启用开机启动"
+    echo "  5) 禁用开机启动"
+    echo "  6) 返回主菜单"
     echo
-    read -p "请选择 [1-9]: " choice || return
+    read -p "请选择 [1-6]: " choice || return
     
     case $choice in
-        1) systemctl start nginx && echo -e "${GREEN}Nginx 已启动${NC}" ;;
-        2) systemctl stop nginx && echo -e "${GREEN}Nginx 已停止${NC}" ;;
-        3) systemctl restart nginx && echo -e "${GREEN}Nginx 已重启${NC}" ;;
-        4) systemctl start fail2ban && echo -e "${GREEN}Fail2Ban 已启动${NC}" ;;
-        5) systemctl stop fail2ban && echo -e "${GREEN}Fail2Ban 已停止${NC}" ;;
-        6) systemctl restart fail2ban && echo -e "${GREEN}Fail2Ban 已重启${NC}" ;;
-        7)
-            systemctl enable nginx
+        1) systemctl start fail2ban && echo -e "${GREEN}Fail2Ban 已启动${NC}" ;;
+        2) systemctl stop fail2ban && echo -e "${GREEN}Fail2Ban 已停止${NC}" ;;
+        3) systemctl restart fail2ban && echo -e "${GREEN}Fail2Ban 已重启${NC}" ;;
+        4)
             systemctl enable fail2ban
             echo -e "${GREEN}已启用开机启动${NC}"
             ;;
-        8)
-            systemctl disable nginx
+        5)
             systemctl disable fail2ban
             echo -e "${GREEN}已禁用开机启动${NC}"
             ;;
-        9)
+        6)
             return
             ;;
     esac

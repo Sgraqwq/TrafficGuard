@@ -82,21 +82,11 @@ echo ""
 
 # 0. 服务状态跟踪
 info "检测服务运行状态..."
-FAIL2BAN_WAS_ACTIVE=false
-NGINX_WAS_ACTIVE=false
-
 if service_is_active fail2ban "$INIT_SYSTEM"; then
     FAIL2BAN_WAS_ACTIVE=true
     info "  Fail2Ban 当前运行中"
 else
     info "  Fail2Ban 未运行"
-fi
-
-if service_is_active nginx "$INIT_SYSTEM"; then
-    NGINX_WAS_ACTIVE=true
-    info "  Nginx 当前运行中"
-else
-    info "  Nginx 未运行"
 fi
 echo ""
 
@@ -114,11 +104,8 @@ backup_file() {
     fi
 }
 
-backup_file /etc/nginx/conf.d/trafficguard.conf
 backup_file /etc/fail2ban/jail.local
 backup_file /etc/fail2ban/jail.d/trafficguard.conf
-backup_file /etc/fail2ban/filter.d/nginx-limit-req.conf
-backup_file /etc/fail2ban/filter.d/nginx-limit-conn.conf
 
 info "配置已备份到 $BACKUP_DIR"
 echo ""
@@ -138,26 +125,7 @@ fi
 nft_delete_table_safe trafficguard
 info "nftables 表已移除"
 
-# 5. 删除 Nginx 配置
-NGINX_CONF_DIR=$(detect_nginx_conf_dir)
-rm -f "$NGINX_CONF_DIR/trafficguard.conf" 2>/dev/null || true
-info "Nginx 配置已移除"
-
-# 仅当 Nginx 之前运行中时才测试配置并重载
-if [ "$NGINX_WAS_ACTIVE" = true ]; then
-    if nginx -t 2>/dev/null; then
-        service_control reload nginx "$INIT_SYSTEM" 2>/dev/null || true
-        info "Nginx 已重新加载"
-    else
-        warn "Nginx 配置测试失败，请手动检查配置"
-    fi
-fi
-
-# 6. 删除 Fail2Ban 配置
-# 删除 filter 文件
-rm -f /etc/fail2ban/filter.d/nginx-limit-req.conf 2>/dev/null || true
-rm -f /etc/fail2ban/filter.d/nginx-limit-conn.conf 2>/dev/null || true
-info "Fail2Ban filter 已移除"
+# 5. 删除 Fail2Ban 配置
 
 # 删除 jail.d/trafficguard.conf（新格式）
 rm -f /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || true
@@ -170,8 +138,6 @@ if [ -f "$JAIL_FILE" ]; then
     cp "$JAIL_FILE" "${JAIL_FILE}.bak" 2>/dev/null || true
     # 使用 awk 注释掉 TrafficGuard 添加的配置段
     awk '
-    /^\[nginx-limit-req\]/ { in_tg = 1; print; next }
-    /^\[nginx-limit-conn\]/ { in_tg = 1; print; next }
     /^\[.*\]/                { in_tg = 0 }
     in_tg                    { print "# " $0; next }
     { print }
@@ -187,7 +153,7 @@ if [ -f "$JAIL_FILE" ]; then
     info "jail.local 已清理"
 fi
 
-# 7. 启动 Fail2Ban（仅当之前运行中）
+# 6. 启动 Fail2Ban（仅当之前运行中）
 if [ "$FAIL2BAN_WAS_ACTIVE" = true ]; then
     service_control start fail2ban "$INIT_SYSTEM" 2>/dev/null || true
     info "Fail2Ban 已重新启动"
@@ -195,14 +161,14 @@ fi
 info "Fail2Ban 配置已清理"
 echo ""
 
-# 8. 删除命令行工具
+# 7. 删除命令行工具
 rm -f /usr/local/bin/tgctl 2>/dev/null || true
 rm -f /usr/bin/tgctl 2>/dev/null || true
 rm -f /usr/local/bin/traffic-save-stats 2>/dev/null || true
 rm -f /usr/local/bin/traffic-view-stats 2>/dev/null || true
 info "命令行工具已移除"
 
-# 9. 删除定时任务
+# 8. 删除定时任务
 if crontab -l 2>/dev/null | grep -q "traffic-save-stats"; then
     (crontab -l 2>/dev/null | grep -v "traffic-save-stats") | crontab - 2>/dev/null || true
     info "定时任务已移除"
@@ -210,7 +176,7 @@ else
     info "未发现 TrafficGuard 定时任务，跳过"
 fi
 
-# 10. 删除数据目录
+# 9. 删除数据目录
 rm -rf /var/lib/trafficguard 2>/dev/null || true
 rm -rf /var/log/trafficguard 2>/dev/null || true
 info "数据目录已移除"
@@ -224,11 +190,8 @@ echo ""
 echo "如需恢复，请按照原始路径逐一复制:"
 echo ""
 for f in \
-    /etc/nginx/conf.d/trafficguard.conf \
     /etc/fail2ban/jail.local \
-    /etc/fail2ban/jail.d/trafficguard.conf \
-    /etc/fail2ban/filter.d/nginx-limit-req.conf \
-    /etc/fail2ban/filter.d/nginx-limit-conn.conf; do
+    /etc/fail2ban/jail.d/trafficguard.conf; do
     backup_path="${BACKUP_DIR}${f}"
     if [ -f "$backup_path" ]; then
         echo "  sudo cp ${backup_path} ${f}"
@@ -237,4 +200,3 @@ done
 echo ""
 echo "恢复后建议重启服务:"
 echo "  sudo systemctl restart fail2ban"
-echo "  sudo systemctl restart nginx"

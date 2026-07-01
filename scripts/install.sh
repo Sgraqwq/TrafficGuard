@@ -14,9 +14,8 @@ set -euo pipefail
 # ── 环境变量 
 export DEBIAN_FRONTEND=noninteractive
 
-# ── 仓库地址及参数 
+# ── 仓库地址 
 TG_REPO="${TG_REPO:-https://github.com/Sgraqwq/TrafficGuard}"
-TG_BACKEND_PORT="${TG_BACKEND_PORT:-8080}"
 
 # URL 验证：防止恶意 URL 注入
 validate_tg_repo() {
@@ -72,14 +71,11 @@ trap cleanup_temp EXIT INT TERM
 INIT_SYSTEM=$(detect_init_system)
 FW_BACKEND=$(detect_firewall_backend)
 F2B_VER=$(detect_fail2ban_version)
-NGINX_CONF_DIR=$(detect_nginx_conf_dir)
 AUTH_LOG=$(detect_auth_log)
-
 info "系统环境:"
 info "  初始化系统: $INIT_SYSTEM"
 info "  防火墙后端: $FW_BACKEND"
 info "  Fail2Ban 版本: ${F2B_VER:-未安装}"
-info "  Nginx 配置目录: $NGINX_CONF_DIR"
 info "  认证日志路径: $AUTH_LOG"
 info ""
 
@@ -189,7 +185,6 @@ echo ""
 info "检测系统依赖..."
 echo ""
 
-ensure_cmd "nginx"           "nginx"      "Nginx Web 服务器"
 ensure_cmd "fail2ban-client" "fail2ban"   "Fail2Ban 自动封禁工具"
 
 # 如果检测到 nftables 则需要安装
@@ -201,75 +196,6 @@ echo ""
 info "依赖检测完成"
 echo ""
 
-# ── 2. Nginx 配置 
-info "安装 Nginx 配置"
-write_file_atomic "$NGINX_CONF_DIR/trafficguard.conf" <<'NGINX_CONF'
-# TrafficGuard - Nginx 限制配置
-
-# 连接限制：每 IP 最多 100 并发连接
-limit_conn_zone $binary_remote_addr zone=perip:10m;
-
-# 速率限制：放宽至每 IP 每秒 50 个请求（兼容代理服务器流量爆发）
-limit_req_zone $binary_remote_addr zone=req_limit:10m rate=50r/s;
-
-# 超过限制时返回 429 (Too Many Requests)
-limit_req_status 429;
-limit_conn_status 429;
-
-server {
-    listen 80;
-    server_name _;
-
-    # 应用连接限制
-    limit_conn perip 100;
-
-    # 应用速率限制
-    limit_req zone=req_limit burst=100 nodelay;
-
-    location / {
-        proxy_pass http://127.0.0.1:__TG_BACKEND_PORT__;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # 自定义 429 错误页面
-    error_page 429 = @429;
-    location @429 {
-        return 429 "Too Many Requests\n";
-    }
-}
-NGINX_CONF
-
-# 替换动态端口
-sed -i "s/__TG_BACKEND_PORT__/$TG_BACKEND_PORT/g" "$NGINX_CONF_DIR/trafficguard.conf"
-
-# 测试 Nginx 配置并启动/重载
-if nginx -t 2>/dev/null; then
-    info "Nginx 配置测试通过"
-    if service_is_active nginx "$INIT_SYSTEM"; then
-        service_control reload nginx "$INIT_SYSTEM" && info "Nginx 已重新加载" || warn "Nginx 重载失败"
-    else
-        if service_control start nginx "$INIT_SYSTEM"; then
-            info "Nginx 已启动"
-        else
-            warn "Nginx 启动失败，请手动检查:"
-            warn "  nginx -t"
-            warn "  systemctl start nginx"
-        fi
-    fi
-else
-    warn "Nginx 配置测试失败，请检查配置后手动启动:"
-    warn "  配置文件: $NGINX_CONF_DIR/trafficguard.conf"
-    warn "  nginx -t"
-    warn "  systemctl start nginx"
-fi
-info "Nginx 已就绪"
-echo ""
 
 # ── 3. Fail2Ban 配置 
 info "安装 Fail2Ban 配置"
@@ -290,27 +216,6 @@ logtarget = /var/log/fail2ban.log
 dbbackend = sqlite
 dbfilename = /var/lib/fail2ban/fail2ban.sqlite3
 
-[nginx-limit-req]
-enabled = true
-port = http,https
-filter = nginx-limit-req
-logpath = /var/log/nginx/error.log
-maxretry = 10
-findtime = 60
-bantime = 600
-# 触发后执行全端口封禁，防止继续探测隐藏的代理端口
-action = nftables[type=allports]
-
-[nginx-limit-conn]
-enabled = true
-port = http,https
-filter = nginx-limit-conn
-logpath = /var/log/nginx/error.log
-maxretry = 5
-findtime = 60
-bantime = 1800
-# 触发后执行全端口封禁，防止继续探测隐藏的代理端口
-action = nftables[type=allports]
 
 [sshd]
 enabled = true
@@ -342,63 +247,7 @@ if [ "$AUTH_LOG_REAL" != "/var/log/auth.log" ]; then
     fi
 fi
 
-# Nginx 错误日志路径检测
-NGINX_LOG="/var/log/nginx/error.log"
-if [ ! -f "$NGINX_LOG" ]; then
-    # 尝试从 nginx 配置中提取 error_log 路径
-    ALT_LOG=$(nginx -T 2>/dev/null | grep -m1 'error_log' | awk '{print $2}' | tr -d ';')
-    if [ -n "$ALT_LOG" ] && [ "$ALT_LOG" != "stderr" ] && [ -f "$ALT_LOG" ]; then
-        NGINX_LOG="$ALT_LOG"
-    else
-        # 尝试常见备选路径
-        for candidate in /var/log/nginx/error.log /var/log/error.log /var/log/nginx/errors.log; do
-            if [ -f "$candidate" ]; then
-                NGINX_LOG="$candidate"
-                break
-            fi
-        done
-    fi
-fi
-# 如果 nginx 日志不在标准位置，更新 Fail2Ban 配置
-if [ -f /etc/fail2ban/jail.d/trafficguard.conf ]; then
-    if [ "$NGINX_LOG" != "/var/log/nginx/error.log" ]; then
-        info "检测到 Nginx 错误日志路径: $NGINX_LOG"
-        sed -i "s|logpath = /var/log/nginx/error.log|logpath = $NGINX_LOG|g" \
-            /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || true
-    fi
-fi
 
-# nginx-limit-req filter
-write_file_atomic /etc/fail2ban/filter.d/nginx-limit-req.conf <<'FLTR_REQ'
-# TrafficGuard - Fail2Ban Filter: nginx-limit-req
-# 参考官方 fail2ban filter: nginx-limit-req.conf
-
-[Definition]
-
-__prefix_line = \s*\[error\] \d+#\d+: \*\d+\s+
-
-failregex = ^%(__prefix_line)s(?:limiting|delaying) requests(?:, excess: [\d\.]+)? by zone "[^"]*", client: <HOST>
-
-ignoreregex =
-
-datepattern = {^LN-BEG}
-FLTR_REQ
-
-# nginx-limit-conn filter
-write_file_atomic /etc/fail2ban/filter.d/nginx-limit-conn.conf <<'FLTR_CONN'
-# TrafficGuard - Fail2Ban Filter: nginx-limit-conn
-# 参考官方 fail2ban filter: nginx-limit-req.conf
-
-[Definition]
-
-__prefix_line = \s*\[error\] \d+#\d+: \*\d+\s+
-
-failregex = ^%(__prefix_line)slimiting connections by zone "[^"]*", client: <HOST>
-
-ignoreregex =
-
-datepattern = {^LN-BEG}
-FLTR_CONN
 
 # 启动/重启 fail2ban
 info "启动 Fail2Ban..."
@@ -464,8 +313,8 @@ else
     warn "  echo '0 * * * * /usr/local/bin/traffic-save-stats' | crontab -"
 fi
 
-# ── 8. nftables 流量统计（幂等创建） 
-info "创建 nftables 流量统计表"
+# ── 8. nftables 流量统计与纯网络层限流 (幂等创建) 
+info "创建 nftables 底层防护与流量统计规则"
 if [ "$FW_BACKEND" = "nftables" ]; then
     nft_create_table_safe trafficguard
 
@@ -476,20 +325,50 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             warn "创建 nftables 链 'TRAFFICGUARD' 失败"
     fi
 
-    # 使用动态 set 统计每个 IP 的流量
+    # === 1. 流量统计集合 ===
     if ! nft list set ip trafficguard per_ip_traffic >/dev/null 2>&1; then
         nft add set ip trafficguard per_ip_traffic \
             '{ type ipv4_addr ; flags dynamic ; counter ; size 65535 ; }' 2>/dev/null || \
-            warn "创建 nftables set 失败"
+            warn "创建 nftables 流量统计 set 失败"
     fi
-
-    # 规则幂等性：检查规则是否已存在
+    # 添加统计规则
     RULE_CHECK_STR="add @per_ip_traffic { ip saddr counter }"
     if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_CHECK_STR"; then
         nft add rule ip trafficguard TRAFFICGUARD "$RULE_CHECK_STR" 2>/dev/null || \
-            warn "添加 nftables 规则失败"
+            warn "添加 nftables 流量统计规则失败"
     fi
-    info "nftables 表已创建并添加 per-IP 流量统计规则"
+
+    # === 2. 手动黑名单集合 ===
+    if ! nft list set ip trafficguard manual_banned >/dev/null 2>&1; then
+        nft add set ip trafficguard manual_banned '{ type ipv4_addr ; size 65535 ; }' 2>/dev/null || \
+            warn "创建 nftables 手动黑名单 set 失败"
+    fi
+    RULE_MANUAL="ip saddr @manual_banned drop"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_MANUAL"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_MANUAL" 2>/dev/null || warn "添加手动黑名单规则失败"
+    fi
+
+    # === 3. 并发连接数限制 ===
+    # 单 IP 超出 100 个 TCP 状态，直接丢弃新连接 (类似 limit_conn)
+    if ! nft list set ip trafficguard conn_limit >/dev/null 2>&1; then
+        nft add set ip trafficguard conn_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null
+    fi
+    RULE_CONN="ct state new add @conn_limit { ip saddr ct count over 100 } drop"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_CONN"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_CONN" 2>/dev/null || warn "添加并发限制规则失败"
+    fi
+
+    # === 4. 新建连接频率限制 ===
+    # 单 IP 发起新连接超过 50/秒 (burst 100)，直接丢弃 (类似 limit_req)
+    if ! nft list set ip trafficguard rate_limit >/dev/null 2>&1; then
+        nft add set ip trafficguard rate_limit '{ type ipv4_addr ; flags dynamic ; size 65535 ; }' 2>/dev/null
+    fi
+    RULE_RATE="ct state new update @rate_limit { ip saddr limit rate over 50/second burst 100 packets } drop"
+    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_RATE"; then
+        nft add rule ip trafficguard TRAFFICGUARD "$RULE_RATE" 2>/dev/null || warn "添加频率限制规则失败"
+    fi
+
+    info "nftables 底层防护墙与统计规则配置完毕"
 else
     warn "未检测到 nftables，跳过流量统计规则创建"
 fi
@@ -502,9 +381,7 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    TrafficGuard 已安装${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "Nginx 配置: $NGINX_CONF_DIR/trafficguard.conf"
 echo "Fail2Ban 配置: /etc/fail2ban/jail.d/trafficguard.conf"
-echo "Fail2Ban Filter: /etc/fail2ban/filter.d/nginx-limit-*.conf"
 echo ""
 echo "快速开始:"
 echo "  tgctl                    # 打开管理界面"

@@ -1,6 +1,6 @@
 # TrafficGuard
 
-基于 Fail2Ban + Nginx 的流量监控和 IP 封禁工具。
+基于内核级 nftables 防火墙 + Fail2Ban 的轻量级流量监控和 IP 封禁工具。
 
 ## 一键安装
 
@@ -28,10 +28,10 @@ curl -fsSL https://raw.githubusercontent.com/Sgraqwq/TrafficGuard/main/scripts/u
 
 ```
 TrafficGuard
-├── Nginx              # 速率/连接限制
-├── Fail2Ban           # 自动封禁
-├── tgctl              # 命令行管理工具
-└── traffic-monitor    # 流量统计脚本
+├── nftables           # 内核级网络层防护 (连接/速率限制)
+├── Fail2Ban           # SSH 防护及持久化封禁
+├── tgctl              # 命令行交互管理工具
+└── traffic-monitor    # 内核级流量统计监控
 ```
 
 ## 安装
@@ -95,47 +95,17 @@ sudo tgctl ssh
 ╚══════════════════════════════════════════════════════════╝
 ```
 
-## 配置
-
-### Nginx 限制
-
-编辑 `/etc/nginx/conf.d/trafficguard.conf`：
-
-```nginx
-# 连接限制：每 IP 最多 100 并发连接
-limit_conn_zone $binary_remote_addr zone=perip:10m;
-
-# 速率限制：每 IP 每秒 10 个请求
-limit_req_zone $binary_remote_addr zone=req_limit:10m rate=10r/s;
-
-server {
-    limit_conn perip 100;
-    limit_req zone=req_limit burst=20 nodelay;
-}
-```
-
 ### Fail2Ban 规则
 
-编辑 `/etc/fail2ban/jail.local`：
+默认生成的 Fail2Ban 配置 (`/etc/fail2ban/jail.d/trafficguard.conf`)：
 
 ```ini
-[nginx-limit-req]
-enabled = true
-port = http,https
-filter = nginx-limit-req
-logpath = /var/log/nginx/error.log
+[DEFAULT]
+bantime = 3600
+findtime = 600
 maxretry = 10
-findtime = 60
-bantime = 600
-
-[nginx-limit-conn]
-enabled = true
-port = http,https
-filter = nginx-limit-conn
-logpath = /var/log/nginx/error.log
-maxretry = 5
-findtime = 60
-bantime = 1800
+banaction = nftables[type=multiport]
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
 
 [sshd]
 enabled = true
@@ -145,6 +115,14 @@ logpath = /var/log/auth.log
 maxretry = 3
 findtime = 600
 bantime = 3600
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+banaction = nftables[type=allports]
+bantime = 1w
+findtime = 1d
+maxretry = 5
 ```
 
 ## 命令参考
@@ -155,31 +133,12 @@ bantime = 3600
 # 查看状态
 sudo fail2ban-client status
 
-# 查看特定 jail
-sudo fail2ban-client status nginx-limit-req
-
-# 手动封禁 IP
-sudo fail2ban-client set nginx-limit-req banip 1.2.3.4
+# 手动封禁 IP (全局黑名单)
+# 可以直接通过 tgctl 封禁，或者使用底层 nftables 命令:
+sudo nft add element ip trafficguard manual_banned { 1.2.3.4 }
 
 # 手动解封 IP
-sudo fail2ban-client set nginx-limit-req unbanip 1.2.3.4
-
-# 重载配置
-sudo fail2ban-client reload
-
-# 查看日志
-sudo tail -f /var/log/fail2ban.log
-```
-
-### Nginx 命令
-
-```bash
-# 测试配置
-sudo nginx -t
-
-# 重载配置
-sudo systemctl reload nginx
-```
+sudo nft delete element ip trafficguard manual_banned { 1.2.3.4 }
 
 ## 流量监控
 
@@ -254,9 +213,8 @@ grep "Failed password" /var/log/auth.log | tail -20
 
 ## 依赖
 
-- Nginx
-- Fail2Ban
-- nftables 或 iptables
+- nftables (核心依赖)
+- Fail2Ban (SSH 防御可选依赖)
 
 ## 安全建议
 

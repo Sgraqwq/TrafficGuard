@@ -101,17 +101,6 @@ detect_fail2ban_version() {
     echo "$ver"
 }
 
-# ── Nginx 配置目录检测 
-# 返回值: 目录路径，默认 /etc/nginx/conf.d
-detect_nginx_conf_dir() {
-    for dir in /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/http.d; do
-        if [ -d "$dir" ]; then
-            echo "$dir"
-            return 0
-        fi
-    done
-    echo "/etc/nginx/conf.d"
-}
 
 # ── 认证日志路径检测 
 # 返回值: 日志文件路径，默认 /var/log/auth.log
