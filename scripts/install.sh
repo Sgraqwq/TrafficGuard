@@ -134,17 +134,31 @@ ensure_cmd() {
 }
 
 # ── 下载辅助函数
-dl() {
-    local url="$TG_RAW/$1" dst="$2"
+# 优先从本地相对路径复制，不存在时再去远程下载
+dl_or_copy() {
+    local rel_path="$1" dst="$2"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || true)"
+    # 安装脚本通常在 scripts/ 目录下，所以项目根目录是上级目录
+    local local_file="$(dirname "$script_dir")/$rel_path"
+
     mkdir -p "$(dirname "$dst")" || error "创建目录失败: $(dirname "$dst")"
-    curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
+
+    if [ -n "$script_dir" ] && [ -f "$local_file" ]; then
+        cp "$local_file" "$dst" || error "复制本地文件失败: $local_file"
+    else
+        local url="$TG_RAW/$rel_path"
+        curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
+    fi
+}
+
+dl() {
+    dl_or_copy "$1" "$2"
 }
 
 dl_chmod() {
-    local url="$TG_RAW/$1" dst="$2"
-    mkdir -p "$(dirname "$dst")" || error "创建目录失败: $(dirname "$dst")"
-    curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$dst" || error "下载失败: $url"
-    chmod +x "$dst"
+    dl_or_copy "$1" "$2"
+    chmod +x "$2"
 }
 
 
