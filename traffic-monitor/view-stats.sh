@@ -60,7 +60,10 @@ show_date_traffic() {
     }
     /^[0-9]/ {
         # 数据行：IP in_pkts in_bytes out_pkts out_bytes
-        printf "%-23s %-18s %-10s %-10s %-10s %-10s\n", timestamp, $1, ($2 ? $2 : "0"), ($3 ? $3 : "0"), ($4 ? $4 : "0"), ($5 ? $5 : "0")
+        # 转换为 MB
+        in_mb = int($3 / 1048576)
+        out_mb = int($5 / 1048576)
+        printf "%-23s %-18s %-10s %-10s MB %-10s %-10s MB\n", timestamp, $1, ($2 ? $2 : "0"), in_mb, ($4 ? $4 : "0"), out_mb
     }
     ' "$stats_file"
     
@@ -180,7 +183,10 @@ show_realtime() {
     # 显示结果
     if [ -s "$MERGED_FILE" ]; then
         sort -k3 -rn "$MERGED_FILE" | head -20 | while read -r ip in_pkts in_bytes out_pkts out_bytes; do
-            printf "%-18s %-10s %-10s %-10s %-10s\n" "$ip" "$in_pkts" "$in_bytes" "$out_pkts" "$out_bytes"
+            # 转换为 MB
+            in_mb=$((in_bytes / 1048576))
+            out_mb=$((out_bytes / 1048576))
+            printf "%-18s %-10s %-10s MB %-10s %-10s MB\n" "$ip" "$in_pkts" "$in_mb" "$out_pkts" "$out_mb"
         done
     fi
     
