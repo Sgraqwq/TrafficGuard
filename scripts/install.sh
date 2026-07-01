@@ -197,6 +197,25 @@ info "依赖检测完成"
 echo ""
 
 
+# ── 2. 收集配置参数 
+info "配置参数..."
+SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
+if [ -t 0 ] || [ -c /dev/tty ]; then
+    echo ""
+    # 尝试从 /dev/tty 读取，兼容 curl | bash 的情况
+    read -t 15 -p "请输入需要防护的 SSH 端口 [默认 22，直接回车跳过]: " input_port < /dev/tty || true
+    if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
+        SSH_PORT="$input_port"
+    fi
+fi
+if [ "$SSH_PORT" = "ssh" ] || [ "$SSH_PORT" = "22" ]; then
+    info "SSH 防护端口: 22 (默认)"
+    SSH_PORT="ssh"
+else
+    info "SSH 防护端口: $SSH_PORT"
+fi
+echo ""
+
 # ── 3. Fail2Ban 配置 
 info "安装 Fail2Ban 配置"
 
@@ -219,7 +238,7 @@ dbfilename = /var/lib/fail2ban/fail2ban.sqlite3
 
 [sshd]
 enabled = true
-port = ssh
+port = __TG_SSH_PORT__
 filter = sshd
 logpath = /var/log/auth.log
 maxretry = 3
@@ -235,6 +254,9 @@ bantime = 1w
 findtime = 1d
 maxretry = 5
 FAIL2BAN_JAIL
+
+# 替换配置中的动态变量
+sed -i "s/__TG_SSH_PORT__/$SSH_PORT/g" /etc/fail2ban/jail.d/trafficguard.conf 2>/dev/null || true
 
 # 更新日志路径为实际检测值（如果默认路径不对）
 AUTH_LOG_REAL=$(detect_auth_log)
