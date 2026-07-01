@@ -416,12 +416,11 @@ info "目录已创建"
 # ── 7. 定时任务 
 info "设置定时任务（每小时统计 + 开机自动恢复）"
 new_crontab=$(crontab -l 2>/dev/null | grep -v "traffic-save-stats" | grep -v "tgctl restore" || true)
-{
+if {
     echo "$new_crontab"
     echo "0 * * * * /usr/local/bin/traffic-save-stats"
     echo "@reboot /usr/local/bin/tgctl restore"
-} | crontab - 2>/dev/null
-if [ $? -eq 0 ]; then
+} | crontab - 2>/dev/null; then
     info "定时任务已设置（每小时统计 + 开机自动恢复规则）"
 else
     warn "定时任务设置失败，请手动添加:"
@@ -570,7 +569,8 @@ echo "  tgctl config             # 配置管理"
 echo ""
 
 # 如果在交互式终端中，安装完成后自动启动管理台
-if [ -t 0 ] || [ -c /dev/tty ]; then
+# 热更新模式下跳过（由 tgctl check_update 自行 exec 重载）
+if [ "${TG_IS_UPDATE:-0}" -eq 0 ] && ([ -t 0 ] || [ -c /dev/tty ]); then
     if command -v tgctl >/dev/null 2>&1; then
         exec tgctl < /dev/tty
     else
