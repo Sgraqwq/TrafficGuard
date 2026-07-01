@@ -25,9 +25,12 @@ STATS_DIR="/var/lib/trafficguard/stats"
 LOG_FILE="/var/log/trafficguard/traffic-stats.log"
 
 # 并发锁：防止多个实例同时执行导致统计文件损坏
+mkdir -p /var/lock 2>/dev/null || true
 LOCK_FILE="/var/lock/tg-save-stats.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9 2>/dev/null; then
+if command -v flock >/dev/null 2>&1; then
+    exec 9>>"$LOCK_FILE"
+    flock -n 9 2>/dev/null || { echo "[$(date +%Y%m%d_%H%M%S)] 另一个实例正在运行，跳过本次执行" >> "$LOG_FILE"; exit 0; }
+else
     # flock 不可用时（比如 busybox）用 mkdir 实现原子锁
     LOCK_DIR="/var/run/tg-save-stats.lock"
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -211,7 +214,6 @@ if [ -n "$TRAFFIC_DATA" ]; then
                         nft add element ip trafficguard manual_banned { "$ip" } 2>/dev/null || \
                             echo "[$NOW] [错误] 封禁 IP $ip 失败" >> "$LOG_FILE"
                         # 原子写入持久化黑名单（防止崩溃导致文件损坏）
-                        local _banned_tmp
                         _banned_tmp=$(mktemp "/etc/trafficguard/manual_banned.XXXXXX" 2>/dev/null) || true
                         if [ -n "$_banned_tmp" ]; then
                             if nft list set ip trafficguard manual_banned 2>/dev/null \

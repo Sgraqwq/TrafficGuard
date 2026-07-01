@@ -483,6 +483,13 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             '{ type filter hook input priority 0 ; policy accept ; }' 2>/dev/null || \
             warn "创建 nftables 链 'TRAFFICGUARD' 失败"
     fi
+    
+    # 出站流量需要挂载在 output hook
+    if ! nft_chain_exists trafficguard TRAFFICGUARD_OUT; then
+        nft add chain ip trafficguard TRAFFICGUARD_OUT \
+            '{ type filter hook output priority 0 ; policy accept ; }' 2>/dev/null || \
+            warn "创建 nftables 链 'TRAFFICGUARD_OUT' 失败"
+    fi
 
     # === 1. 白名单集合（优先放行，必须在流量统计之前）===
     if ! nft list set ip trafficguard whitelist >/dev/null 2>&1; then
@@ -549,8 +556,8 @@ if [ "$FW_BACKEND" = "nftables" ]; then
             warn "添加 nftables 入站流量统计规则失败"
     fi
     RULE_OUTBOUND="add @outbound_traffic { ip daddr counter }"
-    if ! nft_rule_exists trafficguard TRAFFICGUARD "$RULE_OUTBOUND"; then
-        nft add rule ip trafficguard TRAFFICGUARD "$RULE_OUTBOUND" 2>/dev/null || \
+    if ! nft_rule_exists trafficguard TRAFFICGUARD_OUT "$RULE_OUTBOUND"; then
+        nft add rule ip trafficguard TRAFFICGUARD_OUT "$RULE_OUTBOUND" 2>/dev/null || \
             warn "添加 nftables 出站流量统计规则失败"
     fi
 

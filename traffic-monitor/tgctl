@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── 版本信息
-TG_VERSION="1.2.8"
+TG_VERSION="1.2.9"
 TG_REPO="https://github.com/Sgraqwq/TrafficGuard"
 
 # 安全配置读取
@@ -123,11 +123,18 @@ restore_nft_rules() {
     # 2. 手动黑名单拦截
     echo "$chain_rules" | grep -q '@manual_banned' || \
         nft add rule ip trafficguard TRAFFICGUARD 'ip saddr @manual_banned drop' 2>/dev/null || true
-    # 3. 流量统计（仅对未被白黑名单处理的流量计数）
+    # 3. 流量统计（入站和出站挂载在不同的链）
     echo "$chain_rules" | grep -q '@inbound_traffic' || \
         nft add rule ip trafficguard TRAFFICGUARD 'add @inbound_traffic { ip saddr counter }' 2>/dev/null || true
-    echo "$chain_rules" | grep -q '@outbound_traffic' || \
-        nft add rule ip trafficguard TRAFFICGUARD 'add @outbound_traffic { ip daddr counter }' 2>/dev/null || true
+        
+    local out_chain_rules
+    out_chain_rules=$(nft list chain ip trafficguard TRAFFICGUARD_OUT 2>/dev/null || true)
+    if [ -z "$out_chain_rules" ]; then
+        nft add chain ip trafficguard TRAFFICGUARD_OUT '{ type filter hook output priority 0 ; policy accept ; }' 2>/dev/null || true
+        out_chain_rules=$(nft list chain ip trafficguard TRAFFICGUARD_OUT 2>/dev/null || true)
+    fi
+    echo "$out_chain_rules" | grep -q '@outbound_traffic' || \
+        nft add rule ip trafficguard TRAFFICGUARD_OUT 'add @outbound_traffic { ip daddr counter }' 2>/dev/null || true
 
     # 读取配置中的限流参数
     local conn_limit rate_limit rate_burst
