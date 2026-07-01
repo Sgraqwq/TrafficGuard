@@ -200,7 +200,21 @@ echo ""
 # ── 2. 收集配置参数 
 info "配置参数..."
 SSH_PORT="ssh" # Fail2Ban 默认使用 ssh，等同于 22
-info "SSH 防护端口: 22 (默认) - 如需修改请在安装后编辑 /etc/fail2ban/jail.d/trafficguard.conf"
+if [ -t 0 ] || [ -c /dev/tty ]; then
+    echo ""
+    input_port=""
+    echo -n "请输入需要防护的 SSH 端口 [默认 22]: "
+    read -t 15 input_port < /dev/tty || true
+    if [ -n "$input_port" ] && [[ "$input_port" =~ ^[0-9]+$ ]]; then
+        SSH_PORT="$input_port"
+    fi
+fi
+if [ "$SSH_PORT" = "ssh" ] || [ "$SSH_PORT" = "22" ]; then
+    info "SSH 防护端口: 22 (默认)"
+    SSH_PORT="ssh"
+else
+    info "SSH 防护端口: $SSH_PORT"
+fi
 echo ""
 
 # 自动提取当前管理员 IP
